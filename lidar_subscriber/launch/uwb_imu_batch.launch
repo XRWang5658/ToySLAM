@@ -27,7 +27,7 @@
     <!-- ROS topics where sensor data is published -->
     <arg name="imu_topic" default="/imu/data" 
          doc="Topic for IMU measurements (orientation, angular velocity, linear acceleration)" />
-    <arg name="gps_topic" default="/novatel_data/inspvax" 
+    <arg name="gps_topic" default="/gnss_preprocessor_node/odometryECEF" 
          doc="Topic for GPS/INS measurements (position, velocity, orientation)" />
     <arg name="uwb_topic" default="/sensor_simulator/UWBPoistionPS" 
          doc="Topic for UWB position measurements (position only)" />
