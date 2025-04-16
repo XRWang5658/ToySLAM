@@ -23,6 +23,10 @@
 #include <iomanip>  // For std::setprecision
 #include <sstream>  // For std::stringstream
 
+// Added for cooridnate frame conversions
+#include "../include/gnss_tools.h"
+GNSS_Tools m_GNSS_Tools;
+
 // Custom parameterization for pose (position + quaternion)
 class PoseParameterization : public ceres::LocalParameterization {
 public:
@@ -79,9 +83,14 @@ public:
         J.block<3, 3>(0, 0).setIdentity();
         
         // Quaternion part: rotation Jacobian
-        Eigen::Map<const Eigen::Quaterniond> q(x + 3);
+        // Eigen::Map<const Eigen::Quaterniond> q(x + 3);
         
+        // double qw = q.w(), qx = q.x(), qy = q.y(), qz = q.z();
+
+        Eigen::Map<const Eigen::Quaterniond> q_map(x + 3);
+        Eigen::Quaterniond q = q_map;
         double qw = q.w(), qx = q.x(), qy = q.y(), qz = q.z();
+
         J(3, 3) = -qx * 0.5;
         J(3, 4) = -qy * 0.5;
         J(3, 5) = -qz * 0.5;
@@ -1450,7 +1459,7 @@ public:
         imu_sub_ = nh.subscribe(imu_topic_, imu_queue_size_, &UwbImuFusion::imuCallback, this);
         
         if (use_gps_instead_of_uwb_) {
-            gps_sub_ = nh.subscribe(gps_topic_, gps_queue_size_, &UwbImuFusion::gpsCallback, this);
+            gps_sub_ = nh.subscribe(gps_topic_, gps_queue_size_, &UwbImuFusion::gpsCallback_odo, this);
             ROS_INFO("Using GPS+IMU fusion mode");
             ROS_INFO("Subscribing to GPS topic: %s (queue: %d)", gps_topic_.c_str(), gps_queue_size_);
             ROS_INFO("GPS noise: position=%.3f m, velocity=%.3f m/s, orientation=%.3f rad", 
@@ -1562,6 +1571,7 @@ private:
     double ref_latitude_;
     double ref_longitude_;
     double ref_altitude_;
+    Eigen::Vector3d ENU_ref;
 
     // ROS subscribers and publishers
     ros::Subscriber imu_sub_;
@@ -1739,10 +1749,10 @@ private:
         optimized_path_msg_.header.stamp = ros::Time(current_state_.timestamp);
         optimized_path_msg_.poses.push_back(pose_stamped);
         
-        // Limit path size
-        if (optimized_path_msg_.poses.size() > 1000) {
-            optimized_path_msg_.poses.erase(optimized_path_msg_.poses.begin());
-        }
+        // // Limit path size
+        // if (optimized_path_msg_.poses.size() > 1000) {
+        //     optimized_path_msg_.poses.erase(optimized_path_msg_.poses.begin());
+        // }
         
         // Publish the optimized path
         optimized_path_pub_.publish(optimized_path_msg_);
@@ -2280,7 +2290,163 @@ private:
         ROS_INFO("=========================");
     }
 
-    // GPS callback function
+    // input msg: odometry (pose + velocity) in ECEF frame
+    void gpsCallback_odo(const nav_msgs::Odometry::ConstPtr &msg){
+        try{
+            std::lock_guard<std::mutex> lock(data_mutex_);
+            double unix_timestamp = msg->header.stamp.toSec();
+
+            static bool first_conversion = true;
+            if(first_conversion){
+                ROS_INFO("First ros time conversion: ros=%.3f,  unix=%.3f",
+                    msg->header.stamp, unix_timestamp);
+                first_conversion = false;
+            }
+
+            // get coordinates in ECEF frame
+            Eigen::Vector3d pose_ecef = Eigen::Vector3d(
+                msg->pose.pose.position.x,
+                msg->pose.pose.position.y,
+                msg->pose.pose.position.z);
+
+            // get velocity in ECEF frame
+            Eigen::Vector3d vel_ecef = Eigen::Vector3d(
+                msg->twist.twist.linear.x,
+                msg->twist.twist.linear.y,
+                msg->twist.twist.linear.z);
+
+            // set reference point if not set yet
+            // firstly convert to LLH format to fit the original code
+            Eigen::Vector3d pose_llh = m_GNSS_Tools.ecef2llh(pose_ecef);
+
+            if (!has_gps_reference_) {
+                ref_longitude_ = pose_llh(0);
+                ref_latitude_ = pose_llh(1);
+                ref_altitude_ = pose_llh(2);
+                ENU_ref = pose_llh;
+                has_gps_reference_ = true;
+                ROS_INFO("Set GPS reference: lat=%.7f, lon=%.7f, alt=%.3f", 
+                        ref_latitude_, ref_longitude_, ref_altitude_);
+            }
+
+            // convert to ENU frame pose and velocity
+            Eigen::Vector3d pose_enu = m_GNSS_Tools.ecef2enu(ENU_ref, pose_ecef);
+            Eigen::Vector3d vel_enu = m_GNSS_Tools.ecefVelocity2enu(ENU_ref, vel_ecef);
+
+            // DEBUG pose and velocity conversion
+            ROS_DEBUG("GPS pose converted: ECEF [%.2f, %.2f, %.2f] -> ENU [%.2f, %.2f, %.2f]",
+                    pose_ecef.x(), pose_ecef.y(), pose_ecef.z(),
+                    pose_enu.x(), pose_enu.y(), pose_enu.z());
+            ROS_DEBUG("GPS velocity converted: ECEF [%.2f, %.2f, %.2f] -> ENU [%.2f, %.2f, %.2f], magnitude: %.2f m/s (%.1f km/h)",
+                    vel_ecef.x(), vel_ecef.y(), vel_ecef.z(),
+                    vel_enu.x(), vel_enu.y(), vel_enu.z(),
+                    vel_enu.norm(), vel_enu.norm() * 3.6);
+
+            // add unit quaternion to fit the original code
+            Eigen::Quaterniond orientation = Eigen::Quaterniond::Identity();
+
+            // create GPS measurement with timestamps from the bag
+            GpsMeasurement measurement;
+            measurement.position = pose_enu;
+            measurement.velocity = vel_enu;
+            measurement.orientation = orientation;
+            measurement.timestamp = unix_timestamp;  // use the bag's timestamp
+
+            // add gps path for visualization
+            geometry_msgs::PoseStamped pose_stamped;
+            pose_stamped.header.stamp = ros::Time(unix_timestamp);
+            pose_stamped.header.frame_id = world_frame_id_;
+            pose_stamped.pose.position.x = pose_enu.x();
+            pose_stamped.pose.position.y = pose_enu.y();
+            pose_stamped.pose.position.z = pose_enu.z();
+            pose_stamped.pose.orientation.w = orientation.w();
+            pose_stamped.pose.orientation.x = orientation.x();
+            pose_stamped.pose.orientation.y = orientation.y();
+            pose_stamped.pose.orientation.z = orientation.z();
+
+            gps_path_msg_.header.stamp = ros::Time(unix_timestamp);
+            gps_path_msg_.poses.push_back(pose_stamped);
+
+            // publish gps path
+            gps_path_pub_.publish(gps_path_msg_);
+
+            // add to gps measurements
+            gps_measurements_.push_back(measurement);
+
+            // Initialize if not initialized and using GPS
+            if (!is_initialized_ && use_gps_instead_of_uwb_) {
+                // Wait for some IMU data before initializing
+                if (imu_buffer_.size() >= 5) {
+                    ROS_INFO("Initializing system with GPS measurement at timestamp: %.3f", unix_timestamp);
+                    initializeFromGps(measurement);
+                    is_initialized_ = true;
+                } else {
+                    ROS_INFO_THROTTLE(1.0, "Waiting for IMU data before GPS initialization...");
+                }
+                return;
+            }
+
+            // Create a new keyframe at each GPS measurement
+            if (is_initialized_ && has_imu_data_ && use_gps_instead_of_uwb_) {
+                
+                // check if we have IMU data covering this GPS timestamp
+                bool has_surrounding_imu_data = false;
+                double closest_imu_time = 0;
+                double closest_time_diff = std::numeric_limits<double>::max(); // set as the maximum first
+
+                for (const auto& imu : imu_buffer_) {
+                    double imu_time = imu.header.stamp.toSec();
+                    double time_diff = std::abs(imu_time - unix_timestamp);
+
+                    if (time_diff < closest_time_diff) {
+                        closest_time_diff = time_diff;
+                        closest_imu_time = imu_time;
+                    }
+
+                    // consider IMU data within 50ms of the GPS timestamp
+                    if (time_diff < 0.05) {
+                        has_surrounding_imu_data = true;
+                        break;
+                    }
+                }
+
+                if (!has_surrounding_imu_data) {
+                    if(!imu_buffer_.empty()){
+                        ROS_WARN("GPS-IMU time mismatch: GPS=%.3f, closest IMU=%.3f (diff=%.3f sec), buffer range [%.3f to %.3f]", 
+                            unix_timestamp, closest_imu_time, closest_time_diff,
+                            imu_buffer_.front().header.stamp.toSec(), 
+                            imu_buffer_.back().header.stamp.toSec());
+
+                        // If the time difference is small enough, still create a keyframe
+                        if (closest_time_diff < 0.2) {  // Accept up to 200ms difference
+                            has_surrounding_imu_data = true;
+                            ROS_INFO("Using nearby IMU data (%.3f sec offset) for keyframe", closest_time_diff);
+                            
+                            // Fix: Keep the GPS timestamp but know we have nearby IMU data
+                        }
+                    }
+                }
+
+                if (has_surrounding_imu_data) {
+                    // Create keyframe from GPS
+                    createKeyframeFromGps(measurement);
+                    ROS_INFO("Created GPS keyframe at timestamp %.3f", measurement.timestamp);
+                } else {
+                    ROS_WARN("Skipping GPS keyframe at %.3f - no surrounding IMU data", unix_timestamp);
+                }
+            }
+            
+            // Call this function at the end of gpsCallback after adding a few measurements:
+            if (gps_measurements_.size() == 5) {
+                testGpsVelocityCalculation();
+            }
+
+        }catch (const std::exception& e) {
+            ROS_ERROR("Exception in gpsCallback_odometry: %s", e.what());
+        }
+    }
+
+    // original GPS callback function
     void gpsCallback(const novatel_msgs::INSPVAX::ConstPtr& msg) {
         try {
             std::lock_guard<std::mutex> lock(data_mutex_);
@@ -2313,7 +2479,7 @@ private:
             Eigen::Vector3d enu_position = convertGpsToEnu(msg->latitude, msg->longitude, msg->altitude);
 
             // TESTING: Add artificial noise to GPS position if in test mode
-            if (false) {
+            if (true) {
                 double gps_noise_magnitude_ = 2.0;
                 // Only add noise to every nth message to create visible outliers
                 static int msg_counter = 0;
@@ -2384,18 +2550,19 @@ private:
             gps_path_msg_.header.stamp = ros::Time(unix_timestamp);
             gps_path_msg_.poses.push_back(pose_stamped);
 
-            // Limit path size for performance
-            if (gps_path_msg_.poses.size() > 1000) {
-                gps_path_msg_.poses.erase(gps_path_msg_.poses.begin());
-            }
+            // // Limit path size for performance
+            // if (gps_path_msg_.poses.size() > 1000) {
+            //     gps_path_msg_.poses.erase(gps_path_msg_.poses.begin());
+            // }
+            // Comment for better visulization
 
             // Publish the GPS path
             gps_path_pub_.publish(gps_path_msg_);
             
-            // Limit GPS buffer size
-            if (gps_measurements_.size() > 100) {
-                gps_measurements_.erase(gps_measurements_.begin(), gps_measurements_.begin() + 50);
-            }
+            // // Limit GPS buffer size
+            // if (gps_measurements_.size() > 100) {
+            //     gps_measurements_.erase(gps_measurements_.begin(), gps_measurements_.begin() + 50);
+            // }
             
             // Add to GPS measurements
             gps_measurements_.push_back(measurement);
@@ -3649,6 +3816,7 @@ private:
                     double buffer_start = imu_buffer_.front().header.stamp.toSec();
                     double buffer_end = imu_buffer_.back().header.stamp.toSec();
                     
+                    // *********************************************************** //
                     ROS_WARN("IMU buffer doesn't cover the required timespan: buffer [%.6f to %.6f], requested [%.6f to %.6f]",
                           buffer_start, buffer_end, start_time, end_time);
                     
@@ -4080,11 +4248,13 @@ private:
 
             // Time the factor graph optimization
             auto start_time = std::chrono::high_resolution_clock::now();
+            // ROS_INFO("Recorde Time before optimization");
             
             // Perform optimization
             bool success = false;
             
             try {
+                // ROS_INFO("Start to optimize factor graph");
                 success = optimizeFactorGraph();
             } catch (const std::exception& e) {
                 ROS_ERROR("Exception during factor graph optimization: %s", e.what());
@@ -4378,8 +4548,10 @@ private:
         
         // Create pose parameterization
         ceres::LocalParameterization* pose_parameterization = new PoseParameterization();
+        // ROS_INFO("Try to add state variables for ceres");
         
         try {
+            
             // Structure for storing state variables for Ceres
             struct OptVariables {
                 EIGEN_MAKE_ALIGNED_OPERATOR_NEW
@@ -4389,6 +4561,7 @@ private:
             };
             
             // Preallocate with reserve
+            // ROS_INFO("Preallocate with reserve");
             std::vector<OptVariables, Eigen::aligned_allocator<OptVariables>> variables;
             variables.reserve(state_window_.size());
             
@@ -4423,6 +4596,9 @@ private:
                 
                 variables.push_back(var);
             }
+
+            // add variable number, for debug use
+            // ROS_INFO("Optimizing %zu states", state_window_.size());
             
             // Add pose parameterization
             for (size_t i = 0; i < state_window_.size(); ++i) {
@@ -4642,7 +4818,9 @@ private:
             options.linear_solver_type = ceres::SPARSE_NORMAL_CHOLESKY;
             // options.linear_solver_type = ceres::SPARSE_SCHUR;
 
-            options.minimizer_progress_to_stdout = false;
+            // add output for debug use
+            // options.minimizer_progress_to_stdout = false;
+            options.minimizer_progress_to_stdout = true;
             options.num_threads = 4;
             
             // Solve the optimization problem
