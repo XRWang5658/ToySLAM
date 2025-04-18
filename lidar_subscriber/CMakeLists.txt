@@ -35,7 +35,7 @@ find_package(catkin REQUIRED COMPONENTS
   gnss_comm
 )
 
-find_package(absl REQUIRED)
+# find_package(absl REQUIRED)
 
 find_package(PCL 1.8 REQUIRED COMPONENTS common io filters kdtree)
 # find_package(PCL REQUIRED)
@@ -173,7 +173,7 @@ target_link_libraries(uwb_imu_batch_node ${catkin_LIBRARIES} ${CERES_LIBRARIES}
   ${PCL_LIBRARIES}
   # pclomp
   OpenMP::OpenMP_CXX
-  absl::strings
+  # absl::strings
 )
 
 
@@ -192,5 +192,5 @@ target_link_libraries(gnssSpp ${catkin_LIBRARIES} ${CERES_LIBRARIES}
   ${PCL_LIBRARIES}
   # pclomp
   OpenMP::OpenMP_CXX
-  absl::strings
+  # absl::strings
 )
