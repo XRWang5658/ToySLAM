@@ -1384,7 +1384,7 @@ public:
         private_nh.param<std::string>("optimized_pose_topic", optimized_pose_topic_, "/uwb_imu_fusion/optimized_pose");
         private_nh.param<std::string>("imu_pose_topic", imu_pose_topic_, "/uwb_imu_fusion/imu_pose");
         private_nh.param<int>("optimized_pose_queue_size", optimized_pose_queue_size_, 10);
-        private_nh.param<int>("imu_pose_queue_size", imu_pose_queue_size_, 200);
+        private_nh.param<int>("imu_pose_queue_size", imu_pose_queue_size_, 20000);
         
         // Load parameters
         private_nh.param<double>("gravity_magnitude", gravity_magnitude_, 9.81);
@@ -1477,6 +1477,7 @@ public:
         
         optimized_pose_pub_ = nh.advertise<nav_msgs::Odometry>(optimized_pose_topic_, optimized_pose_queue_size_);
         imu_pose_pub_ = nh.advertise<nav_msgs::Odometry>(imu_pose_topic_, imu_pose_queue_size_);
+        imu_path_pub_ = nh.advertise<nav_msgs::Path>("imu_path", 10000);
         
         // Initialize visualization publishers
         gps_path_pub_ = nh.advertise<nav_msgs::Path>("/trajectory/gps_path", 1, true);
@@ -1487,6 +1488,7 @@ public:
         // Initialize path messages
         gps_path_msg_.header.frame_id = world_frame_id_;
         optimized_path_msg_.header.frame_id = world_frame_id_;
+        imu_path_msg_.header.frame_id = world_frame_id_;
 
         ROS_INFO("Visualization publishers initialized. Add these topics in RViz:");
         ROS_INFO(" - GPS trajectory: Path display at /trajectory/gps_path");
@@ -1578,6 +1580,7 @@ private:
     ros::Subscriber uwb_sub_;
     ros::Publisher optimized_pose_pub_;
     ros::Publisher imu_pose_pub_;
+    ros::Publisher imu_path_pub_;
     ros::Timer optimization_timer_;
     tf2_ros::TransformBroadcaster tf_broadcaster_;
 
@@ -1590,6 +1593,7 @@ private:
     // Path messages for visualization
     nav_msgs::Path gps_path_msg_;
     nav_msgs::Path optimized_path_msg_;
+    nav_msgs::Path imu_path_msg_;
 
     // Error visualization
     visualization_msgs::MarkerArray position_error_markers_;
@@ -2762,7 +2766,7 @@ private:
                 new_state.timestamp = gps.timestamp;
                 
                 state_window_.push_back(new_state);
-                ROS_DEBUG("Added first GPS-based keyframe at t=%.3f", gps.timestamp);
+                ROS_INFO("Added first GPS-based keyframe at t=%.3f", gps.timestamp);
                 return;
             }
             
@@ -2773,34 +2777,66 @@ private:
             if (dt < 0.01) {
                 return;
             }
+
+            // // return if the state window include less than 2 states
+            // if (state_window_.size() < 2) {
+            //     return;
+            // }
             
             // Compute the propagated state at the GPS timestamp
-            State propagated_state = propagateState(state_window_.back(), gps.timestamp);
+            State propagated_state_gps = propagateState(state_window_.back(), gps.timestamp);
+
+            // change the logic to use IMU preintegrated state from the last keyframe to current time
+            // Use the last keyframe's biases for the new keyframe
+            State last_keyframe = state_window_.back();
+
+            double start_time = last_keyframe.timestamp;
+            double end_time = gps.timestamp;
+                
+            // Store preintegration data for optimization
+            performPreintegrationBetweenKeyframes(start_time, end_time, 
+                                                    last_keyframe.acc_bias, 
+                                                    last_keyframe.gyro_bias);
+
+            // create a key pair to find the preintegration result
+            std::pair<double, double> key_pair = std::make_pair(start_time, end_time);
+            
+            // propagate the state using IMU preintegration
+            Eigen::Vector3d dp = preintegration_map_.at(key_pair).delta_position;
+            Eigen::Quaterniond dq = preintegration_map_.at(key_pair).delta_orientation;
+            Eigen::Vector3d dv = preintegration_map_.at(key_pair).delta_velocity;
+
+            State propagated_state_imu = last_keyframe;
+            propagated_state_imu.position += dp;
+            propagated_state_imu.orientation = dq * last_keyframe.orientation;
+            propagated_state_imu.velocity += dv;
+            propagated_state_imu.timestamp = gps.timestamp;
             
             // Set the GPS position
-            propagated_state.position = gps.position;
+            propagated_state_gps.position = gps.position;
             
             // Set orientation only if configured to use GPS orientation
             if (use_gps_orientation_as_initial_) {
-                propagated_state.orientation = gps.orientation;
+                propagated_state_gps.orientation = gps.orientation;
             }
             
             /// Set velocity only if configured to use GPS velocity
             if (use_gps_velocity_) {
                 // Convert from North-East-Down to East-North-Up if needed
-                propagated_state.velocity = gps.velocity;
+                propagated_state_gps.velocity = gps.velocity;
                 
                 // Log velocity update
-                double vel_norm = propagated_state.velocity.norm();
+                double vel_norm = propagated_state_gps.velocity.norm();
                 ROS_INFO("Setting velocity from GPS: [%.2f, %.2f, %.2f] m/s, magnitude: %.2f m/s (%.1f km/h)",
-                        propagated_state.velocity.x(), propagated_state.velocity.y(), propagated_state.velocity.z(),
+                    propagated_state_gps.velocity.x(), propagated_state_gps.velocity.y(), propagated_state_gps.velocity.z(),
                         vel_norm, vel_norm * 3.6);
             }
             
-            propagated_state.timestamp = gps.timestamp;
+            propagated_state_gps.timestamp = gps.timestamp;
             
             // CRITICAL: Ensure biases are reasonable in the new keyframe
-            clampBiases(propagated_state.acc_bias, propagated_state.gyro_bias);
+            clampBiases(propagated_state_gps.acc_bias, propagated_state_gps.gyro_bias);
+            clampBiases(propagated_state_imu.acc_bias, propagated_state_imu.gyro_bias);
             
             // Add to state window, with marginalization if needed
             if (state_window_.size() >= optimization_window_size_) {
@@ -2810,23 +2846,16 @@ private:
                 }
                 state_window_.pop_front();
             }
+
+            // switch here to experiment with different initial values
+            // State propagated_state = propagated_state_imu;
+            State propagated_state = propagated_state_gps;
             
             state_window_.push_back(propagated_state);
             
             // Update current state
             current_state_ = propagated_state;
             
-            // Update preintegration between the last two keyframes
-            if (state_window_.size() >= 2) {
-                size_t n = state_window_.size();
-                double start_time = state_window_[n-2].timestamp;
-                double end_time = state_window_[n-1].timestamp;
-                
-                // Store preintegration data for optimization
-                performPreintegrationBetweenKeyframes(start_time, end_time, 
-                                                     state_window_[n-2].acc_bias, 
-                                                     state_window_[n-2].gyro_bias);
-            }
             
         } catch (const std::exception& e) {
             ROS_ERROR("Exception in createKeyframeFromGps: %s", e.what());
@@ -3096,6 +3125,10 @@ private:
             // CRITICAL: Initialize with sane non-zero biases
             current_state_.acc_bias = initial_acc_bias_;
             current_state_.gyro_bias = initial_gyro_bias_;
+
+            ROS_INFO("Initialized Acc Bias [%.6f, %.6f, %.6f], Gyro Bias [%.6f, %.6f, %.6f]",
+                current_state_.acc_bias.x(), current_state_.acc_bias.y(), current_state_.acc_bias.z(),
+                current_state_.gyro_bias.x(), current_state_.gyro_bias.y(), current_state_.gyro_bias.z());
             
             current_state_.timestamp = 0;
             
@@ -4191,13 +4224,13 @@ private:
                     double position_error = (latest_state.position - latest_gps.position).norm();
                     
                     // Adjust drift threshold based on velocity
-                    double adaptive_drift_threshold = 1.0; // Default threshold
+                    double adaptive_drift_threshold = 5.0; // Default threshold
                     double velocity_norm = latest_state.velocity.norm();
                     
                     // Increase allowable drift at higher speeds
                     if (velocity_norm > 10.0) {
                         adaptive_drift_threshold = 1.0 + (velocity_norm - 10.0) * 0.1;
-                        adaptive_drift_threshold = std::min(adaptive_drift_threshold, 3.0); // Cap at 3 meters
+                        adaptive_drift_threshold = std::min(adaptive_drift_threshold, 15.0); // Cap at 3 meters
                     }
                     
                     if (position_error > adaptive_drift_threshold) {
@@ -4277,13 +4310,13 @@ private:
                 double velocity_kmh = current_state_.velocity.norm() * 3.6; // m/s to km/h
                 
                 ROS_INFO("Optimization time: %.1f ms", duration.count());
-                ROS_INFO("State: Pos [%.2f, %.2f, %.2f] | Vel [%.2f, %.2f, %.2f] (%.1f km/h) | Euler [%.1f, %.1f, %.1f] deg | Bias acc [%.3f, %.3f, %.3f] gyro [%.3f, %.3f, %.3f]",
-                    current_state_.position.x(), current_state_.position.y(), current_state_.position.z(),
-                    current_state_.velocity.x(), current_state_.velocity.y(), current_state_.velocity.z(),
-                    velocity_kmh,
-                    euler_angles.x(), euler_angles.y(), euler_angles.z(),
-                    current_state_.acc_bias.x(), current_state_.acc_bias.y(), current_state_.acc_bias.z(),
-                    current_state_.gyro_bias.x(), current_state_.gyro_bias.y(), current_state_.gyro_bias.z());
+                // ROS_INFO("State: Pos [%.2f, %.2f, %.2f] | Vel [%.2f, %.2f, %.2f] (%.1f km/h) | Euler [%.1f, %.1f, %.1f] deg | Bias acc [%.3f, %.3f, %.3f] gyro [%.3f, %.3f, %.3f]",
+                //     current_state_.position.x(), current_state_.position.y(), current_state_.position.z(),
+                //     current_state_.velocity.x(), current_state_.velocity.y(), current_state_.velocity.z(),
+                //     velocity_kmh,
+                //     euler_angles.x(), euler_angles.y(), euler_angles.z(),
+                //     current_state_.acc_bias.x(), current_state_.acc_bias.y(), current_state_.acc_bias.z(),
+                //     current_state_.gyro_bias.x(), current_state_.gyro_bias.y(), current_state_.gyro_bias.z());
                 
                 // Publish state
                 publishOptimizedPose();
@@ -4599,6 +4632,10 @@ private:
 
             // add variable number, for debug use
             // ROS_INFO("Optimizing %zu states", state_window_.size());
+            // output the state window before optimization
+            // for (size_t i = 0; i < state_window_.size(); ++i) {
+            //     ROS_INFO("State %zu: [%.2f, %.2f, %.2f]", i, state_window_[i].position.x(), state_window_[i].position.y(), state_window_[i].position.z());
+            // }
             
             // Add pose parameterization
             for (size_t i = 0; i < state_window_.size(); ++i) {
@@ -4606,6 +4643,7 @@ private:
             }
             
             // If bias estimation is disabled, set biases constant
+            // set bias as constant to test the result
             if (!enable_bias_estimation_) {
                 for (size_t i = 0; i < state_window_.size(); ++i) {
                     problem.SetParameterBlockConstant(variables[i].bias);
@@ -4626,6 +4664,11 @@ private:
                                 gps.position, gps_position_noise_);
                             
                             problem.AddResidualBlock(gps_pos_factor, NULL, variables[i].pose);
+                            // ROS_INFO("Add GPS position factor, keyframe_time=%.3f", keyframe_time);
+                            // ROS_INFO("GPS position: [%.2f, %.2f, %.2f]", 
+                            //         gps.position.x(), gps.position.y(), gps.position.z());
+                            // ROS_INFO("State position: [%.2f, %.2f, %.2f]", 
+                            //         variables[i].pose[0], variables[i].pose[1], variables[i].pose[2]);
                             
                             // Add velocity factor if configured to use GPS velocity
                             if (use_gps_velocity_ && enable_velocity_constraint_) {
@@ -4795,6 +4838,14 @@ private:
                     problem.AddResidualBlock(imu_factor, NULL,
                                            variables[i].pose, variables[i].velocity, variables[i].bias,
                                            variables[i+1].pose, variables[i+1].velocity, variables[i+1].bias);
+
+                        // ROS_INFO("Add IMU factor between keyframes [%.3f-%.3f]", start_time, end_time);
+                        // ROS_INFO("IMU preintegration: dp=[%.3f,%.3f,%.3f], dv=[%.3f,%.3f,%.3f]",
+                        //         preint.delta_position.x(), preint.delta_position.y(), preint.delta_position.z(),
+                        //         preint.delta_velocity.x(), preint.delta_velocity.y(), preint.delta_velocity.z());
+                        // ROS_INFO("State positions: [%.2f, %.2f, %.2f] [%.2f, %.2f, %.2f]",
+                        //         variables[i].pose[0], variables[i].pose[1], variables[i].pose[2],
+                        //         variables[i+1].pose[0], variables[i+1].pose[1], variables[i+1].pose[2]);
                 }
             }
             
@@ -4820,8 +4871,8 @@ private:
 
             // add output for debug use
             // options.minimizer_progress_to_stdout = false;
-            options.minimizer_progress_to_stdout = true;
-            options.num_threads = 4;
+            options.minimizer_progress_to_stdout = false;
+            options.num_threads = 8;
             
             // Solve the optimization problem
             ceres::Solver::Summary summary;
@@ -4830,9 +4881,26 @@ private:
             if (!summary.IsSolutionUsable()) {
                 return false;
             }
+
+            // std::cout << summary.FullReport() << std::endl;
+
+            for (size_t i = 0; i < state_window_.size() - 1; ++i) {
+                std::pair<double, double> key(state_window_[i].timestamp, state_window_[i+1].timestamp);
+                if (preintegration_map_.find(key) == preintegration_map_.end()) {
+                    ROS_WARN("Missing preintegration between states %zu and %zu", i, i+1);
+                }
+            }
+
+            // // output the state window after optimization
+            // for (size_t i = 0; i < variables.size(); ++i) {
+            //     ROS_INFO("Optimized state %zu: [%.2f, %.2f, %.2f]", i, variables[i].pose[0], variables[i].pose[1], variables[i].pose[2]);
+            // }
+                
             
             // Update state with optimized values
             for (size_t i = 0; i < state_window_.size(); ++i) {
+
+                Eigen::Vector3d old_pos = state_window_[i].position;
                 // Update position
                 state_window_[i].position = Eigen::Vector3d(
                     variables[i].pose[0], variables[i].pose[1], variables[i].pose[2]);
@@ -4869,7 +4937,13 @@ private:
                     // Update state with clamped biases
                     state_window_[i].acc_bias = new_acc_bias;
                     state_window_[i].gyro_bias = new_gyro_bias;
-                }
+
+                    // 打印零偏
+                    ROS_INFO("Epoch %zu: Acc Bias [%.6f, %.6f, %.6f], Gyro Bias [%.6f, %.6f, %.6f]",
+                        i,
+                        new_acc_bias.x(), new_acc_bias.y(), new_acc_bias.z(),
+                        new_gyro_bias.x(), new_gyro_bias.y(), new_gyro_bias.z());
+                            }
             }
             
             // Update current state to the latest state in the window
@@ -4890,9 +4964,9 @@ private:
             // Log detailed velocity information
             if (!state_window_.empty()) {
                 double vel_norm = current_state_.velocity.norm();
-                ROS_INFO("After optimization: velocity [%.2f, %.2f, %.2f] m/s, magnitude: %.2f m/s (%.1f km/h)",
-                        current_state_.velocity.x(), current_state_.velocity.y(), current_state_.velocity.z(),
-                        vel_norm, vel_norm * 3.6);
+                // ROS_INFO("After optimization: velocity [%.2f, %.2f, %.2f] m/s, magnitude: %.2f m/s (%.1f km/h)",
+                //         current_state_.velocity.x(), current_state_.velocity.y(), current_state_.velocity.z(),
+                //         vel_norm, vel_norm * 3.6);
                 
                 // If we have GPS data, compare with GPS velocity
                 if (use_gps_instead_of_uwb_ && !gps_measurements_.empty()) {
@@ -4914,9 +4988,9 @@ private:
                         double gps_vel_norm = closest_gps.velocity.norm();
                         double vel_diff = (current_state_.velocity - closest_gps.velocity).norm();
                         
-                        ROS_INFO("GPS velocity comparison: GPS [%.2f, %.2f, %.2f] m/s (%.1f km/h), diff: %.2f m/s (%.1f km/h)",
-                                closest_gps.velocity.x(), closest_gps.velocity.y(), closest_gps.velocity.z(),
-                                gps_vel_norm * 3.6, vel_diff, vel_diff * 3.6);
+                        // ROS_INFO("GPS velocity comparison: GPS [%.2f, %.2f, %.2f] m/s (%.1f km/h), diff: %.2f m/s (%.1f km/h)",
+                        //         closest_gps.velocity.x(), closest_gps.velocity.y(), closest_gps.velocity.z(),
+                        //         gps_vel_norm * 3.6, vel_diff, vel_diff * 3.6);
                     }
                 }
             }
@@ -4969,6 +5043,16 @@ private:
             
             // Publish the message
             imu_pose_pub_.publish(odom_msg);
+
+            // add imu path for debug
+            geometry_msgs::PoseStamped pose_stamped;
+            pose_stamped.header = odom_msg.header;
+            pose_stamped.pose = odom_msg.pose.pose;
+
+            imu_path_msg_.header.stamp = pose_stamped.header.stamp;
+            imu_path_msg_.poses.push_back(pose_stamped);
+
+            imu_path_pub_.publish(imu_path_msg_);
             
             // Publish the TF transform
             geometry_msgs::TransformStamped transform_stamped;
@@ -5335,6 +5419,12 @@ private:
                 // Apply bias correction
                 Eigen::Vector3d acc_corrected = acc - current_state_.acc_bias;
                 Eigen::Vector3d gyro_corrected = gyro - current_state_.gyro_bias;
+
+                // 打印当前零偏
+                ROS_INFO("Timestamp %.3f: Acc Bias [%.6f, %.6f, %.6f], Gyro Bias [%.6f, %.6f, %.6f]",
+                    timestamp,
+                    current_state_.acc_bias.x(), current_state_.acc_bias.y(), current_state_.acc_bias.z(),
+                    current_state_.gyro_bias.x(), current_state_.gyro_bias.y(), current_state_.gyro_bias.z());
                 
                 // Store orientation before update
                 Eigen::Quaterniond orientation_before = current_state_.orientation;
