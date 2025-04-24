@@ -1,4 +1,8 @@
 <launch>
+
+     <!--Most Critical: Gravity Acc-->
+     <arg name="gravity_magnitude" default="9.785" 
+         doc="Gravity acceleration in m/s². Default is 9.785 m/s². for Hong Kong, it can vary depends on the latitude" />
     <!-- ============================== SENSOR FUSION MODE ============================== -->
     <!-- Determines whether to use GPS or UWB for position measurements -->
     <!-- Set to true for GPS+IMU fusion, false for UWB+IMU fusion -->
@@ -47,6 +51,10 @@
          doc="Accelerometer white noise (m/s²). Higher values trust accelerometer less." />
     <arg name="imu_gyro_noise" default="0.002" 
          doc="Gyroscope white noise (rad/s). Higher values trust gyroscope less." />
+    <arg name="imu_acc_bias_noise" default="0.00001"
+         doc="Accelerometer bias noise (m/s²). Higher values allow more IMU influence." />
+    <arg name="imu_gyro_bias_noise" default="0.00001"
+         doc="Gyroscope bias noise (rad/s). Higher values allow more IMU influence." />
     
     <!-- GPS noise parameters - affect how tightly estimates adhere to GPS -->
     <arg name="gps_position_noise" default="0.5" 
@@ -154,6 +162,8 @@
     <!-- GPS/IMU Fusion Node -->
     <node name="uwb_imu_batch_node" pkg="ToySLAM" type="uwb_imu_batch_node" output="screen">
         <!-- Pass all parameters to the node -->
+
+        <param name="gravity_magnitude" value="$(arg gravity_magnitude)" />
         
         <!-- Topic configuration -->
         <param name="imu_topic" value="$(arg imu_topic)" />
@@ -173,6 +183,8 @@
         <!-- Noise parameters -->
         <param name="imu_acc_noise" value="$(arg imu_acc_noise)" />
         <param name="imu_gyro_noise" value="$(arg imu_gyro_noise)" />
+        <param name="imu_acc_bias_noise" value="$(arg imu_acc_bias_noise)" />
+        <param name="imu_gyro_bias_noise" value="$(arg imu_gyro_bias_noise)" />
         <param name="gps_position_noise" value="$(arg gps_position_noise)" />
         <param name="gps_velocity_noise" value="$(arg gps_velocity_noise)" />
         <param name="gps_orientation_noise" value="$(arg gps_orientation_noise)" />
