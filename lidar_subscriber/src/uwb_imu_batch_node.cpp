@@ -27,6 +27,9 @@
 #include "../include/gnss_tools.h"
 GNSS_Tools m_GNSS_Tools;
 
+#include "../include/imu_preint.h"
+#include "../include/imu_factor.h"
+
 // Custom parameterization for pose (position + quaternion)
 class PoseParameterization : public ceres::LocalParameterization {
 public:
@@ -495,7 +498,7 @@ public:
         // Compute position residuals - weighted by noise standard deviation
         residuals[0] = (position[0] - T(measured_position_[0])) / T(noise_std_);
         residuals[1] = (position[1] - T(measured_position_[1])) / T(noise_std_);
-        residuals[2] = (position[2] - T(measured_position_[2])) / T(noise_std_ * 0.0001);
+        residuals[2] = (position[2] - T(measured_position_[2])) / T(noise_std_);
         
         return true;
     }
@@ -1248,13 +1251,15 @@ public:
         // Gravity vector in world frame
         // Gravity vector in world frame (in ENU, gravity is [0, 0, -9.81])
         Eigen::Matrix<T, 3, 1> g = gravity_.cast<T>();
+        // ROS_INFO("g: %f %f %f", g(0), g(1), g(2));
 
         // Compute residuals
         Eigen::Map<Eigen::Matrix<T, 15, 1>> residual(residuals);
 
         // Position residual - in ENU frame, g is already negative in Z-direction
-        residual.template segment<3>(0) = q_i.inverse() * ((p_j - p_i - v_i * sum_dt) - 
+        residual.template segment<3>(0) = q_i.inverse() * ((p_j - p_i - v_i * sum_dt) + 
                                                     T(0.5) * g * sum_dt * sum_dt) - corrected_delta_p;
+        // residual.template segment<3>(0) = q_i.inverse() * ((p_j - p_i - v_i * sum_dt)) - corrected_delta_p;
         
         // Orientation residual - IMPROVED with safer handling
         Eigen::Quaternion<T> q_i_inverse_times_q_j = q_i.conjugate() * q_j;
@@ -1289,7 +1294,8 @@ public:
         }
         
         // Velocity residual
-        residual.template segment<3>(6) = q_i.inverse() * (v_j - v_i - g * sum_dt) - corrected_delta_v;
+        // residual.template segment<3>(6) = q_i.inverse() * (v_j - v_i - g * sum_dt) - corrected_delta_v;
+        residual.template segment<3>(6) = q_i.inverse() * (v_j - v_i + g * sum_dt) - corrected_delta_v;
 
         // std::cout<<"velocity residuals->  "<<residual.template segment<3>(6)<<"\n";
         
@@ -1459,7 +1465,8 @@ public:
         imu_sub_ = nh.subscribe(imu_topic_, imu_queue_size_, &UwbImuFusion::imuCallback, this);
         
         if (use_gps_instead_of_uwb_) {
-            gps_sub_ = nh.subscribe(gps_topic_, gps_queue_size_, &UwbImuFusion::gpsCallback_odo, this);
+            // gps_sub_ = nh.subscribe(gps_topic_, gps_queue_size_, &UwbImuFusion::gpsCallback_odo, this);
+            gps_sub_ = nh.subscribe(gps_topic_, gps_queue_size_, &UwbImuFusion::gpsCallback, this);
             ROS_INFO("Using GPS+IMU fusion mode");
             ROS_INFO("Subscribing to GPS topic: %s (queue: %d)", gps_topic_.c_str(), gps_queue_size_);
             ROS_INFO("GPS noise: position=%.3f m, velocity=%.3f m/s, orientation=%.3f rad", 
@@ -1468,6 +1475,7 @@ public:
                     use_gps_orientation_as_initial_ ? "enabled" : "disabled",
                     use_gps_orientation_as_constraint_ ? "enabled" : "disabled");
             ROS_INFO("GPS velocity usage: %s", use_gps_velocity_ ? "enabled" : "disabled");
+            ROS_INFO("Gravity Magnitude: %.3f m/s²", gravity_magnitude_);
         } else {
             uwb_sub_ = nh.subscribe(uwb_topic_, uwb_queue_size_, &UwbImuFusion::uwbCallback, this);
             ROS_INFO("Using UWB+IMU fusion mode");
@@ -1482,6 +1490,8 @@ public:
         // Initialize visualization publishers
         gps_path_pub_ = nh.advertise<nav_msgs::Path>("/trajectory/gps_path", 1, true);
         optimized_path_pub_ = nh.advertise<nav_msgs::Path>("/trajectory/optimized_path", 1, true);
+        final_path_pub_ = nh.advertise<nav_msgs::Path>("/trajectory/final_path", 1, true);
+
         position_error_pub_ = nh.advertise<visualization_msgs::MarkerArray>("/errors/position", 1);
         velocity_error_pub_ = nh.advertise<visualization_msgs::MarkerArray>("/errors/velocity", 1);
 
@@ -1489,6 +1499,7 @@ public:
         gps_path_msg_.header.frame_id = world_frame_id_;
         optimized_path_msg_.header.frame_id = world_frame_id_;
         imu_path_msg_.header.frame_id = world_frame_id_;
+        final_path_msg_.header.frame_id = world_frame_id_;
 
         ROS_INFO("Visualization publishers initialized. Add these topics in RViz:");
         ROS_INFO(" - GPS trajectory: Path display at /trajectory/gps_path");
@@ -1587,6 +1598,7 @@ private:
     // Visualization publishers
     ros::Publisher gps_path_pub_;
     ros::Publisher optimized_path_pub_;
+    ros::Publisher final_path_pub_;
     ros::Publisher position_error_pub_;
     ros::Publisher velocity_error_pub_;
 
@@ -1594,6 +1606,7 @@ private:
     nav_msgs::Path gps_path_msg_;
     nav_msgs::Path optimized_path_msg_;
     nav_msgs::Path imu_path_msg_;
+    nav_msgs::Path final_path_msg_;
 
     // Error visualization
     visualization_msgs::MarkerArray position_error_markers_;
@@ -1704,6 +1717,8 @@ private:
     
     // IMU Preintegration between keyframes
     typedef typename ImuFactor::ImuPreintegrationBetweenKeyframes ImuPreintegrationBetweenKeyframes;
+    std::map<std::pair<double, double>, imu_preint> preintegration_map_test;
+    imu_preint current_preint_test;
     
     // Map to store preintegration data between consecutive keyframes
     std::map<std::pair<double, double>, ImuPreintegrationBetweenKeyframes> preintegration_map_;
@@ -1760,6 +1775,31 @@ private:
         
         // Publish the optimized path
         optimized_path_pub_.publish(optimized_path_msg_);
+    }
+
+    // update final path in publishOptimizedPose
+    void updateFinalPath(State& old_state) {
+        geometry_msgs::PoseStamped pose_stamped;
+        pose_stamped.header.stamp = ros::Time(old_state.timestamp);
+        pose_stamped.header.frame_id = world_frame_id_;
+        pose_stamped.pose.position.x = old_state.position.x();
+        pose_stamped.pose.position.y = old_state.position.y();
+        pose_stamped.pose.position.z = old_state.position.z();
+        pose_stamped.pose.orientation.w = old_state.orientation.w();
+        pose_stamped.pose.orientation.x = old_state.orientation.x();
+        pose_stamped.pose.orientation.y = old_state.orientation.y();
+        pose_stamped.pose.orientation.z = old_state.orientation.z();
+        
+        final_path_msg_.header.stamp = ros::Time(old_state.timestamp);
+        final_path_msg_.poses.push_back(pose_stamped);
+        
+        // // Limit path size
+        // if (final_path_msg_.poses.size() > 1000) {
+        //     final_path_msg_.poses.erase(final_path_msg_.poses.begin());
+        // }
+        
+        // Publish the final path
+        final_path_pub_.publish(final_path_msg_);
     }
 
     // Calculate and visualize position error between optimized pose and GPS
@@ -1979,9 +2019,9 @@ private:
             // Log error statistics periodically
             static double last_log_time = 0;
             if (current_time - last_log_time > 5.0) {
-                ROS_INFO("Position Error (m): %.2f (E:%.2f, N:%.2f, U:%.2f), publishing %zu markers", 
-                         error_norm, position_error.x(), position_error.y(), position_error.z(),
-                         position_error_markers_.markers.size());
+                // ROS_INFO("Position Error (m): %.2f (E:%.2f, N:%.2f, U:%.2f), publishing %zu markers", 
+                //          error_norm, position_error.x(), position_error.y(), position_error.z(),
+                //          position_error_markers_.markers.size());
                 last_log_time = current_time;
             }
         } else {
@@ -2172,8 +2212,8 @@ private:
             // Log velocity error statistics periodically
             static double last_log_time = 0;
             if (current_time - last_log_time > 5.0) {
-                ROS_INFO("Velocity Error (m/s): %.2f (E:%.2f, N:%.2f, U:%.2f)", 
-                        velocity_error_norm, velocity_error.x(), velocity_error.y(), velocity_error.z());
+                // ROS_INFO("Velocity Error (m/s): %.2f (E:%.2f, N:%.2f, U:%.2f)", 
+                //         velocity_error_norm, velocity_error.x(), velocity_error.y(), velocity_error.z());
                 last_log_time = current_time;
             }
         }
@@ -2484,25 +2524,24 @@ private:
 
             // TESTING: Add artificial noise to GPS position if in test mode
             if (true) {
-                double gps_noise_magnitude_ = 2.0;
+                double gps_noise_magnitude_ = 5.0;
                 // Only add noise to every nth message to create visible outliers
                 static int msg_counter = 0;
-                if (++msg_counter % 20 == 0) {  // Every 5th message gets noise
-                    // Generate random noise
-                    double noise_x = ((double)rand() / RAND_MAX * 2.0 - 1.0) * gps_noise_magnitude_;
-                    double noise_y = ((double)rand() / RAND_MAX * 2.0 - 1.0) * gps_noise_magnitude_;
-                    double noise_z = ((double)rand() / RAND_MAX * 2.0 - 1.0) * gps_noise_magnitude_ * 0.5;
-                    
-                    // Add the noise
-                    Eigen::Vector3d original_position = enu_position;
-                    enu_position.x() += noise_x;
-                    enu_position.y() += noise_y;
-                    enu_position.z() += noise_z;
-                    
-                    // Log the injected noise
-                    ROS_INFO("Injected GPS noise: [%.2f, %.2f, %.2f] meters at t=%.3f", 
-                            noise_x, noise_y, noise_z, unix_timestamp);
-                }
+                
+                // Generate random noise
+                double noise_x = ((double)rand() / RAND_MAX * 2.0 - 1.0) * gps_noise_magnitude_;
+                double noise_y = ((double)rand() / RAND_MAX * 2.0 - 1.0) * gps_noise_magnitude_;
+                double noise_z = ((double)rand() / RAND_MAX * 2.0 - 1.0) * gps_noise_magnitude_ * 0.5;
+                
+                // Add the noise
+                Eigen::Vector3d original_position = enu_position;
+                enu_position.x() += noise_x;
+                enu_position.y() += noise_y;
+                enu_position.z() += noise_z;
+                
+                // Log the injected noise
+                ROS_INFO("Injected GPS noise: [%.2f, %.2f, %.2f] meters at t=%.3f", 
+                        noise_x, noise_y, noise_z, unix_timestamp);
             }
             
             // Get velocity (convert from NED to ENU)
@@ -2578,6 +2617,7 @@ private:
                     ROS_INFO("Initializing system with GPS measurement at timestamp: %.3f", unix_timestamp);
                     initializeFromGps(measurement);
                     is_initialized_ = true;
+                    current_preint_test.reset();
                 } else {
                     ROS_INFO_THROTTLE(1.0, "Waiting for IMU data before GPS initialization...");
                 }
@@ -2794,24 +2834,17 @@ private:
             double end_time = gps.timestamp;
                 
             // Store preintegration data for optimization
-            performPreintegrationBetweenKeyframes(start_time, end_time, 
-                                                    last_keyframe.acc_bias, 
-                                                    last_keyframe.gyro_bias);
+            // performPreintegrationBetweenKeyframes_(last_keyframe, propagated_state_gps, 
+            //                                         last_keyframe.acc_bias, 
+            //                                         last_keyframe.gyro_bias);
+            // performPreintegrationBetweenKeyframes(start_time, end_time, 
+            //                                         last_keyframe.acc_bias, 
+            //                                         last_keyframe.gyro_bias);
+            performPreintegrationBetweenKeyframes_(start_time, end_time);
 
             // create a key pair to find the preintegration result
             std::pair<double, double> key_pair = std::make_pair(start_time, end_time);
-            
-            // propagate the state using IMU preintegration
-            Eigen::Vector3d dp = preintegration_map_.at(key_pair).delta_position;
-            Eigen::Quaterniond dq = preintegration_map_.at(key_pair).delta_orientation;
-            Eigen::Vector3d dv = preintegration_map_.at(key_pair).delta_velocity;
 
-            State propagated_state_imu = last_keyframe;
-            propagated_state_imu.position += dp;
-            propagated_state_imu.orientation = dq * last_keyframe.orientation;
-            propagated_state_imu.velocity += dv;
-            propagated_state_imu.timestamp = gps.timestamp;
-            
             // Set the GPS position
             propagated_state_gps.position = gps.position;
             
@@ -2827,35 +2860,38 @@ private:
                 
                 // Log velocity update
                 double vel_norm = propagated_state_gps.velocity.norm();
-                ROS_INFO("Setting velocity from GPS: [%.2f, %.2f, %.2f] m/s, magnitude: %.2f m/s (%.1f km/h)",
-                    propagated_state_gps.velocity.x(), propagated_state_gps.velocity.y(), propagated_state_gps.velocity.z(),
-                        vel_norm, vel_norm * 3.6);
+                // ROS_INFO("Setting velocity from GPS: [%.2f, %.2f, %.2f] m/s, magnitude: %.2f m/s (%.1f km/h)",
+                //     propagated_state_gps.velocity.x(), propagated_state_gps.velocity.y(), propagated_state_gps.velocity.z(),
+                //         vel_norm, vel_norm * 3.6);
             }
             
             propagated_state_gps.timestamp = gps.timestamp;
             
             // CRITICAL: Ensure biases are reasonable in the new keyframe
             clampBiases(propagated_state_gps.acc_bias, propagated_state_gps.gyro_bias);
-            clampBiases(propagated_state_imu.acc_bias, propagated_state_imu.gyro_bias);
             
             // Add to state window, with marginalization if needed
             if (state_window_.size() >= optimization_window_size_) {
                 if (enable_marginalization_) {
                     // Prepare marginalization before removing the oldest state
-                    prepareMarginalization();
+                    // prepareMarginalization();
                 }
+                // get the olded state
+                State oldest_state = state_window_.front();
+                updateFinalPath(oldest_state);
+
                 state_window_.pop_front();
+                // add another track to show the optimized result
+
             }
 
             // switch here to experiment with different initial values
-            // State propagated_state = propagated_state_imu;
             State propagated_state = propagated_state_gps;
             
             state_window_.push_back(propagated_state);
             
             // Update current state
-            current_state_ = propagated_state;
-            
+            current_state_ = propagated_state;    
             
         } catch (const std::exception& e) {
             ROS_ERROR("Exception in createKeyframeFromGps: %s", e.what());
@@ -3292,6 +3328,15 @@ private:
                     ROS_INFO("Cleaned %d old IMU messages, remaining: %d", count_before - count_after, count_after);
                 }
             }
+
+            // add IMU measurement to the preintegration map
+            // extract the data first, including the stamp in seconds, the acceleration, and the angular velocity
+            double unix_timestamp = msg->header.stamp.toSec();
+            Eigen::Vector3d acc(msg->linear_acceleration.x, msg->linear_acceleration.y, msg->linear_acceleration.z);
+            Eigen::Vector3d gyro(msg->angular_velocity.x, msg->angular_velocity.y, msg->angular_velocity.z);
+            // add the IMU measurement to the preintegration map
+            current_preint_test.push_back(unix_timestamp, acc, gyro);
+
         } catch (const std::exception& e) {
             ROS_ERROR("Exception in imuCallback: %s", e.what());
         }
@@ -3755,6 +3800,62 @@ private:
         }
     }
     
+    void printPreintegrationDebug(const ImuPreintegrationBetweenKeyframes& preint, 
+        const Eigen::Vector3d& acc_without_gravity1,
+        const Eigen::Quaterniond& delta_q_half,
+        int step,
+        double timestamp) {
+        if (step == 0) {  // 只在每个IMU测量的第一个子步骤打印
+        // 当前姿态状态
+            ROS_INFO("=== IMU Pre-integration Debug at t=%.3f ===", timestamp);
+
+            // 1. 打印累积的预积分旋转和当前中间旋转
+            Eigen::Vector3d euler_preint = quaternionToEulerDegrees(preint.delta_orientation);
+            Eigen::Vector3d euler_half = quaternionToEulerDegrees(delta_q_half);
+            ROS_INFO("Delta Q (cumulative): RPY=[%.2f, %.2f, %.2f]", 
+            euler_preint.x(), euler_preint.y(), euler_preint.z());
+            ROS_INFO("Delta Q Half: RPY=[%.2f, %.2f, %.2f]", 
+            euler_half.x(), euler_half.y(), euler_half.z());
+
+            // 2. 加速度转换前后对比
+            Eigen::Vector3d acc_wrong = delta_q_half * acc_without_gravity1;
+            Eigen::Vector3d acc_correct = preint.delta_orientation * acc_without_gravity1;
+
+            ROS_INFO("Original acc (no gravity): [%.3f, %.3f, %.3f]", 
+            acc_without_gravity1.x(), acc_without_gravity1.y(), acc_without_gravity1.z());
+            ROS_INFO("Acc with delta_q_half: [%.3f, %.3f, %.3f]", 
+            acc_wrong.x(), acc_wrong.y(), acc_wrong.z());
+            ROS_INFO("Acc with preint.delta_orientation: [%.3f, %.3f, %.3f]", 
+            acc_correct.x(), acc_correct.y(), acc_correct.z());
+
+            // 3. 显示差异
+            Eigen::Vector3d acc_diff = acc_correct - acc_wrong;
+            ROS_INFO("Acceleration difference: [%.3f, %.3f, %.3f] (norm: %.3f)",
+            acc_diff.x(), acc_diff.y(), acc_diff.z(), acc_diff.norm());
+
+            // 4. 当前预积分状态
+            ROS_INFO("Current preintegration state:");
+            ROS_INFO("  Position delta: [%.3f, %.3f, %.3f]",
+            preint.delta_position.x(), preint.delta_position.y(), preint.delta_position.z());
+            ROS_INFO("  Velocity delta: [%.3f, %.3f, %.3f]",
+            preint.delta_velocity.x(), preint.delta_velocity.y(), preint.delta_velocity.z());
+            ROS_INFO("=======================================");
+        }
+    }
+
+    // new version of performPreintegrationBetweenKeyframes, that use 2 states as input
+    // to obtain more information from 2 frames including the 
+    void performPreintegrationBetweenKeyframes_(const double &start_time, const double &end_time)
+    {
+        // save the preint data to the map
+        preintegration_map_test[std::make_pair(start_time, end_time)] = current_preint_test;
+        // print the preint data
+        ROS_INFO("Preintegration data saved for keyframes: [%.3f, %.3f]", start_time, end_time);
+        
+        // reset the current preint data to accept imu messages for next one
+        current_preint_test.reset();
+    }
+
     // IMPROVED: Perform IMU pre-integration between keyframes with RK4 and bias random walk
     void performPreintegrationBetweenKeyframes(double start_time, double end_time, 
                                               const Eigen::Vector3d& acc_bias, 
@@ -3785,6 +3886,8 @@ private:
             Eigen::Vector3d clamped_acc_bias = acc_bias;
             Eigen::Vector3d clamped_gyro_bias = gyro_bias;
             clampBiases(clamped_acc_bias, clamped_gyro_bias);
+
+            // find the velocity of the start time,
             
             // Create new preintegration data
             ImuPreintegrationBetweenKeyframes preint;
@@ -3844,6 +3947,7 @@ private:
             
             // If no IMU data found, create synthetic data
             if (preint.imu_measurements.empty()) {
+                ROS_WARN("No IMU data found between %.6f and %.6f, creating synthetic IMU data", start_time, end_time);
                 // Provide better diagnostics about what's in the buffer
                 if (!imu_buffer_.empty()) {
                     double buffer_start = imu_buffer_.front().header.stamp.toSec();
@@ -3995,9 +4099,13 @@ private:
             
             // Get orientation at start time
             Eigen::Quaterniond current_orientation = Eigen::Quaterniond::Identity();
+            Eigen::Vector3d current_velocity  = Eigen::Vector3d::Zero();
+            State current_state;
             for (const auto& state : state_window_) {
                 if (std::abs(state.timestamp - start_time) < 0.005) {
+                    current_velocity = state.velocity;
                     current_orientation = state.orientation;
+                    current_state = state;
                     break;
                 }
             }
@@ -4086,15 +4194,21 @@ private:
                     Eigen::Quaterniond delta_q_old = preint.delta_orientation;
                     
                     // Integrate delta quaternion (rotation)
+                    Eigen::Vector3d gyro_avg = (gyro_step1 + gyro_step2) * 0.5;
                     Eigen::Vector3d integrated_gyro = (gyro_step1 + gyro_step2) * 0.5 * step_dt;
                     Eigen::Quaterniond delta_q = Eigen::Quaterniond::Identity();
                     
-                    if (integrated_gyro.norm() > 1e-8) {
-                        delta_q = Eigen::Quaterniond(
-                            Eigen::AngleAxisd(integrated_gyro.norm(), integrated_gyro.normalized())
-                        );
+                    // if (integrated_gyro.norm() > 1e-8) {
+                    //     delta_q = Eigen::Quaterniond(
+                    //         Eigen::AngleAxisd(integrated_gyro.norm(), integrated_gyro.normalized())
+                    //     );
+                    // }
+
+                    if(gyro_avg.norm() > 1e-8) {
+                        // print out the norm of gyro_avg
+                        delta_q = Eigen::Quaterniond(1.0, 0.5 * gyro_avg[0] * step_dt, 0.5 * gyro_avg[1] * step_dt, 0.5 * gyro_avg[2] * step_dt);
                     }
-                    
+
                     // Update preintegrated delta orientation
                     preint.delta_orientation = preint.delta_orientation * delta_q;
                     preint.delta_orientation.normalize();
@@ -4102,6 +4216,8 @@ private:
                     // Compute half-point rotation for midpoint integration
                     Eigen::Quaterniond delta_q_half = delta_q_old.slerp(0.5, preint.delta_orientation);
                     delta_q_half.normalize();
+                    Eigen::Quaterniond q_half = current_orientation * delta_q_half;
+                    q_half.normalize();
                     
                     // Get gravity in sensor frame based on current orientation
                     Eigen::Vector3d gravity_sensor = current_orientation.inverse() * gravity_world_;
@@ -4109,6 +4225,8 @@ private:
                     // Remove gravity from accelerometers (gravity is already in sensor frame)
                     Eigen::Vector3d acc_without_gravity1 = acc_step1 + gravity_sensor;
                     Eigen::Vector3d acc_without_gravity2 = acc_step2 + gravity_sensor;
+
+                    // printPreintegrationDebug(preint, acc_without_gravity1, delta_q_half, step, timestamp);
 
                     // ROS_INFO("IMU pre-integration gravity compensation: acc1=[%.2f, %.2f, %.2f], gravity_sensor=[%.2f, %.2f, %.2f], acc_no_g1=[%.2f, %.2f, %.2f]",
                     //     acc_step1.x(), acc_step1.y(), acc_step1.z(),
@@ -4118,15 +4236,21 @@ private:
                     // Rotate accelerations to integration frame
                     Eigen::Vector3d acc_int_frame1 = delta_q_half * acc_without_gravity1;
                     Eigen::Vector3d acc_int_frame2 = delta_q_half * acc_without_gravity2;
+
+                    Eigen::Vector3d acc_int_frame1_ = delta_q_half.inverse() * acc_step1;
+                    Eigen::Vector3d acc_int_frame2_ = delta_q_half.inverse() * acc_step2;
                     
                     // Integrate velocity using midpoint rule
                     Eigen::Vector3d acc_integrated = (acc_int_frame1 + acc_int_frame2) * 0.5;
-                    preint.delta_velocity += acc_integrated * step_dt;
+                    Eigen::Vector3d acc_integrated_ = (acc_int_frame1_ + acc_int_frame2_) * 0.5;
+                    Eigen::Vector3d vel_old = preint.delta_velocity;
+                    preint.delta_velocity += acc_integrated_ * step_dt;
                     
                     // Integrate position using midpoint rule with current velocity
-                    Eigen::Vector3d vel_midpoint = preint.delta_velocity - 0.5 * acc_integrated * step_dt;
-                    preint.delta_position += vel_midpoint * step_dt;
-                    
+                    Eigen::Vector3d vel_midpoint = preint.delta_velocity - 0.5 * acc_integrated_ * step_dt;
+                    // preint.delta_position += vel_midpoint * step_dt;
+                    preint.delta_position += vel_old * step_dt + 0.5 * acc_integrated_ * step_dt * step_dt;
+
                     // Update covariance and Jacobians
                     // Calculate Jacobians for noise propagation
                     Eigen::Matrix<double, 9, 9> F = Eigen::Matrix<double, 9, 9>::Identity();
@@ -4186,12 +4310,24 @@ private:
                 preint.covariance(i, i) = std::max(preint.covariance(i, i), 1e-8);
             }
             
-            // Print diagnostics
+            // // Print diagnostics
             ROS_INFO("Preintegration [%.3f-%.3f] dt=%.3f: dp=[%.3f,%.3f,%.3f], dv=[%.3f,%.3f,%.3f], IMU count=%d",
                     start_time, end_time, preint.sum_dt,
                     preint.delta_position.x(), preint.delta_position.y(), preint.delta_position.z(),
                     preint.delta_velocity.x(), preint.delta_velocity.y(), preint.delta_velocity.z(),
                     (int)preint.imu_measurements.size());
+            // print the moved distance magnitude, the velcity magnitude and the time
+            // ROS_INFO("Preintegration dt=%.3f: dp=%.3f, dv=%.3f ",
+            //         preint.sum_dt,
+            //         preint.delta_position.norm(),
+            //         preint.delta_velocity.norm());
+
+            // print more information including the state especially the velocity of current state, and orientation
+            ROS_INFO("Current State: Pos [%.2f, %.2f, %.2f] | Vel [%.2f, %.2f, %.2f] | Quat [%.2f, %.2f, %.2f, %.2f] def]",
+                current_state.position.x(), current_state.position.y(), current_state.position.z(),
+                current_state.velocity.x(), current_state.velocity.y(), current_state.velocity.z(),
+                current_state.orientation.w(), current_state.orientation.x(), current_state.orientation.y(), current_state.orientation.z()
+            );
             
             // Store in map
             preintegration_map_[key] = preint;
@@ -4233,10 +4369,10 @@ private:
                         adaptive_drift_threshold = std::min(adaptive_drift_threshold, 15.0); // Cap at 3 meters
                     }
                     
-                    if (position_error > adaptive_drift_threshold) {
-                        ROS_WARN("Position drift detected in GPS mode: %.2f meters. Resetting position.", position_error);
-                        resetStateToGps(latest_gps);
-                    }
+                    // if (position_error > adaptive_drift_threshold) {
+                    //     ROS_WARN("Position drift detected in GPS mode: %.2f meters. Resetting position.", position_error);
+                    //     resetStateToGps(latest_gps);
+                    // }
                 }
             } else {
                 // Check UWB drift
@@ -4273,9 +4409,13 @@ private:
                 std::pair<double, double> key(start_time, end_time);
                 
                 if (preintegration_map_.find(key) == preintegration_map_.end()) {
-                    performPreintegrationBetweenKeyframes(start_time, end_time, 
-                                                         state_window_[i].acc_bias, 
-                                                         state_window_[i].gyro_bias);
+                    // performPreintegrationBetweenKeyframes_(state_window_[i], state_window_[i+1], 
+                    //                                      state_window_[i].acc_bias, 
+                    //                                      state_window_[i].gyro_bias);
+                    // performPreintegrationBetweenKeyframes(start_time, end_time, 
+                    //                                       state_window_[i].acc_bias, 
+                    //                                       state_window_[i].gyro_bias);
+                    // performPreintegrationBetweenKeyframes_()
                 }
             }
 
@@ -4309,7 +4449,7 @@ private:
                 // Get velocity in km/h for better reporting in high-speed scenario
                 double velocity_kmh = current_state_.velocity.norm() * 3.6; // m/s to km/h
                 
-                ROS_INFO("Optimization time: %.1f ms", duration.count());
+                // ROS_INFO("Optimization time: %.1f ms", duration.count());
                 // ROS_INFO("State: Pos [%.2f, %.2f, %.2f] | Vel [%.2f, %.2f, %.2f] (%.1f km/h) | Euler [%.1f, %.1f, %.1f] deg | Bias acc [%.3f, %.3f, %.3f] gyro [%.3f, %.3f, %.3f]",
                 //     current_state_.position.x(), current_state_.position.y(), current_state_.position.z(),
                 //     current_state_.velocity.x(), current_state_.velocity.y(), current_state_.velocity.z(),
@@ -4630,9 +4770,9 @@ private:
                 variables.push_back(var);
             }
 
-            // add variable number, for debug use
+            // // add variable number, for debug use
             // ROS_INFO("Optimizing %zu states", state_window_.size());
-            // output the state window before optimization
+            // // output the state window before optimization
             // for (size_t i = 0; i < state_window_.size(); ++i) {
             //     ROS_INFO("State %zu: [%.2f, %.2f, %.2f]", i, state_window_[i].position.x(), state_window_[i].position.y(), state_window_[i].position.z());
             // }
@@ -4664,11 +4804,11 @@ private:
                                 gps.position, gps_position_noise_);
                             
                             problem.AddResidualBlock(gps_pos_factor, NULL, variables[i].pose);
-                            // ROS_INFO("Add GPS position factor, keyframe_time=%.3f", keyframe_time);
-                            // ROS_INFO("GPS position: [%.2f, %.2f, %.2f]", 
-                            //         gps.position.x(), gps.position.y(), gps.position.z());
-                            // ROS_INFO("State position: [%.2f, %.2f, %.2f]", 
-                            //         variables[i].pose[0], variables[i].pose[1], variables[i].pose[2]);
+                            ROS_INFO("Add GPS position factor, keyframe_time=%.3f", keyframe_time);
+                            ROS_INFO("GPS position: [%.2f, %.2f, %.2f]", 
+                                    gps.position.x(), gps.position.y(), gps.position.z());
+                            ROS_INFO("State position: [%.2f, %.2f, %.2f]", 
+                                    variables[i].pose[0], variables[i].pose[1], variables[i].pose[2]);
                             
                             // Add velocity factor if configured to use GPS velocity
                             if (use_gps_velocity_ && enable_velocity_constraint_) {
@@ -4827,25 +4967,34 @@ private:
                 
                 std::pair<double, double> key(start_time, end_time);
                 
-                if (preintegration_map_.find(key) != preintegration_map_.end()) {
-                    const auto& preint = preintegration_map_[key];
+                if (preintegration_map_test.find(key) != preintegration_map_test.end()) {
+                    // const auto& preint = preintegration_map_[key];
                     
-                    // IMPROVED: Pass bias correction threshold to IMU factor
-                    ceres::CostFunction* imu_factor = ImuFactor::Create(
-                        preint, gravity_world_, bias_correction_threshold_);
+                    // // IMPROVED: Pass bias correction threshold to IMU factor
+                    // ceres::CostFunction* imu_factor = ImuFactor::Create(
+                    //     preint, gravity_world_, bias_correction_threshold_);
                     
-                    // IMPROVED: Use HuberLoss for IMU factor
-                    problem.AddResidualBlock(imu_factor, NULL,
+                    // // IMPROVED: Use HuberLoss for IMU factor
+                    // problem.AddResidualBlock(imu_factor, NULL,
+                    //                        variables[i].pose, variables[i].velocity, variables[i].bias,
+                    //                        variables[i+1].pose, variables[i+1].velocity, variables[i+1].bias);
+                    auto& preint = preintegration_map_test[key];
+                    ceres::CostFunction* imu_factor_ = new imu_factor(&preint);
+
+                    problem.AddResidualBlock(imu_factor_, NULL,
                                            variables[i].pose, variables[i].velocity, variables[i].bias,
                                            variables[i+1].pose, variables[i+1].velocity, variables[i+1].bias);
 
-                        // ROS_INFO("Add IMU factor between keyframes [%.3f-%.3f]", start_time, end_time);
-                        // ROS_INFO("IMU preintegration: dp=[%.3f,%.3f,%.3f], dv=[%.3f,%.3f,%.3f]",
-                        //         preint.delta_position.x(), preint.delta_position.y(), preint.delta_position.z(),
-                        //         preint.delta_velocity.x(), preint.delta_velocity.y(), preint.delta_velocity.z());
-                        // ROS_INFO("State positions: [%.2f, %.2f, %.2f] [%.2f, %.2f, %.2f]",
-                        //         variables[i].pose[0], variables[i].pose[1], variables[i].pose[2],
-                        //         variables[i+1].pose[0], variables[i+1].pose[1], variables[i+1].pose[2]);
+                    ROS_INFO("Add IMU factor between keyframes [%.3f-%.3f]", start_time, end_time);
+                    // ROS_INFO("IMU preintegration: dp=[%.3f,%.3f,%.3f], dv=[%.3f,%.3f,%.3f]",
+                    //         preint.alpha.x(), preint.alpha.y(), preint.alpha.z(),
+                    //         preint.beta.x(), preint.beta.y(), preint.beta.z());
+                    ROS_INFO("State positions: [%.2f, %.2f, %.2f] [%.2f, %.2f, %.2f]",
+                            variables[i].pose[0], variables[i].pose[1], variables[i].pose[2],
+                            variables[i+1].pose[0], variables[i+1].pose[1], variables[i+1].pose[2]);
+                    ROS_INFO("State velocities: [%.2f, %.2f, %.2f] [%.2f, %.2f, %.2f]",
+                            variables[i].velocity[0], variables[i].velocity[1], variables[i].velocity[2],
+                            variables[i+1].velocity[0], variables[i+1].velocity[1], variables[i+1].velocity[2]);
                 }
             }
             
@@ -4869,9 +5018,11 @@ private:
             options.linear_solver_type = ceres::SPARSE_NORMAL_CHOLESKY;
             // options.linear_solver_type = ceres::SPARSE_SCHUR;
 
+            ROS_INFO("Optimization problem has %zu residuals and %zu parameter blocks",
+                    problem.NumResiduals(), problem.NumParameterBlocks());
             // add output for debug use
             // options.minimizer_progress_to_stdout = false;
-            options.minimizer_progress_to_stdout = false;
+            options.minimizer_progress_to_stdout = true;
             options.num_threads = 8;
             
             // Solve the optimization problem
@@ -4879,6 +5030,7 @@ private:
             ceres::Solve(options, &problem, &summary);
             
             if (!summary.IsSolutionUsable()) {
+                ROS_INFO("Optimization failed: %s", summary.FullReport().c_str());
                 return false;
             }
 
@@ -4886,7 +5038,7 @@ private:
 
             for (size_t i = 0; i < state_window_.size() - 1; ++i) {
                 std::pair<double, double> key(state_window_[i].timestamp, state_window_[i+1].timestamp);
-                if (preintegration_map_.find(key) == preintegration_map_.end()) {
+                if (preintegration_map_test.find(key) == preintegration_map_test.end()) {
                     ROS_WARN("Missing preintegration between states %zu and %zu", i, i+1);
                 }
             }
@@ -4933,17 +5085,17 @@ private:
                     
                     // Ensure biases stay within reasonable limits
                     clampBiases(new_acc_bias, new_gyro_bias);
-                    
+
                     // Update state with clamped biases
                     state_window_[i].acc_bias = new_acc_bias;
                     state_window_[i].gyro_bias = new_gyro_bias;
 
-                    // 打印零偏
-                    ROS_INFO("Epoch %zu: Acc Bias [%.6f, %.6f, %.6f], Gyro Bias [%.6f, %.6f, %.6f]",
-                        i,
-                        new_acc_bias.x(), new_acc_bias.y(), new_acc_bias.z(),
-                        new_gyro_bias.x(), new_gyro_bias.y(), new_gyro_bias.z());
-                            }
+                    // // 打印零偏
+                    // ROS_INFO("Epoch %zu: Acc Bias [%.6f, %.6f, %.6f], Gyro Bias [%.6f, %.6f, %.6f]",
+                    //     i,
+                    //     new_acc_bias.x(), new_acc_bias.y(), new_acc_bias.z(),
+                    //     new_gyro_bias.x(), new_gyro_bias.y(), new_gyro_bias.z());
+                }
             }
             
             // Update current state to the latest state in the window
@@ -5354,11 +5506,13 @@ private:
             
             // Special handling if we just ran optimization
             if (just_optimized_) {
+                // ROS_INFO("Just optimized, skipping IMU integration");
                 // Just update timestamp without integration
                 current_state_.timestamp = timestamp;
                 just_optimized_ = false;
                 return;
             }
+            // ROS_INFO("IMU integration: timestamp %.3f", timestamp);
             
             // Extract IMU measurements
             Eigen::Vector3d acc(imu_msg.linear_acceleration.x,
@@ -5416,67 +5570,67 @@ private:
                 Eigen::Quaterniond blended_orientation = current_state_.orientation.slerp(0.3, imu_orientation);
                 current_state_.orientation = blended_orientation.normalized();
             } else {
-                // Apply bias correction
-                Eigen::Vector3d acc_corrected = acc - current_state_.acc_bias;
-                Eigen::Vector3d gyro_corrected = gyro - current_state_.gyro_bias;
+            // Apply bias correction
+            Eigen::Vector3d acc_corrected = acc - current_state_.acc_bias;
+            Eigen::Vector3d gyro_corrected = gyro - current_state_.gyro_bias;
 
-                // 打印当前零偏
-                ROS_INFO("Timestamp %.3f: Acc Bias [%.6f, %.6f, %.6f], Gyro Bias [%.6f, %.6f, %.6f]",
-                    timestamp,
-                    current_state_.acc_bias.x(), current_state_.acc_bias.y(), current_state_.acc_bias.z(),
-                    current_state_.gyro_bias.x(), current_state_.gyro_bias.y(), current_state_.gyro_bias.z());
-                
-                // Store orientation before update
-                Eigen::Quaterniond orientation_before = current_state_.orientation;
-                
-                // Update orientation with simple integration for real-time
-                Eigen::Vector3d angle_axis = gyro_corrected * dt;
-                Eigen::Quaterniond dq = deltaQ(angle_axis);
-                
-                // Update orientation
-                current_state_.orientation = (current_state_.orientation * dq).normalized();
-                
-                // Get gravity in sensor frame (average of before and after rotation)
-                Eigen::Vector3d gravity_sensor1 = orientation_before.inverse() * gravity_world_;
-                Eigen::Vector3d gravity_sensor2 = current_state_.orientation.inverse() * gravity_world_;
-                Eigen::Vector3d gravity_sensor = 0.5 * (gravity_sensor1 + gravity_sensor2);
-                
-                // Remove gravity from accelerometer reading (accelerometer measures gravity + acceleration)
-                // In ENU frame with Z-up, gravity is [0, 0, -9.81], so we add the gravity_sensor vector
-                Eigen::Vector3d acc_without_gravity = acc_corrected + gravity_sensor;
-                ROS_DEBUG("IMU gravity compensation: raw=[%.2f, %.2f, %.2f], gravity_sensor=[%.2f, %.2f, %.2f], corrected=[%.2f, %.2f, %.2f]",
-                        acc_corrected.x(), acc_corrected.y(), acc_corrected.z(),
-                        gravity_sensor.x(), gravity_sensor.y(), gravity_sensor.z(),
-                        acc_without_gravity.x(), acc_without_gravity.y(), acc_without_gravity.z());
-                
-                // Rotate to world frame using midpoint rotation
-                Eigen::Quaterniond orientation_mid = orientation_before.slerp(0.5, current_state_.orientation);
-                Eigen::Vector3d acc_world = orientation_mid * acc_without_gravity;
-                
-                // Store velocity before update for trapezoidal integration
-                Eigen::Vector3d velocity_before = current_state_.velocity;
-                
-                // Update velocity
-                current_state_.velocity += acc_world * dt;
-                
-                // IMPROVED: For high-speed scenarios - remove vertical damping
-                // Only apply slight damping if we have a large spurious vertical velocity
-                // double v_vel_abs = std::abs(current_state_.velocity.z());
-                // if (v_vel_abs > 5.0) {  // Only dampen extreme vertical velocities
-                //     current_state_.velocity.z() *= 0.95;  // Mild damping only on extreme values
-                // }
-                
-                // Adaptive max velocity based on IMU data for real-time propagation
-                double adaptive_max_vel = max_velocity_;
-                if (imu_buffer_.size() > 10) {
-                    adaptive_max_vel = std::max(max_velocity_, estimateMaxVelocityFromImu());
-                }
-                
-                // Ensure velocity stays within reasonable limits while preserving direction
-                clampVelocity(current_state_.velocity, adaptive_max_vel);
-                
-                // Update position using trapezoidal integration
-                current_state_.position += 0.5 * (velocity_before + current_state_.velocity) * dt;
+            // // 打印当前零偏
+            // ROS_INFO("Timestamp %.3f: Acc Bias [%.6f, %.6f, %.6f], Gyro Bias [%.6f, %.6f, %.6f]",
+            //     timestamp,
+            //     current_state_.acc_bias.x(), current_state_.acc_bias.y(), current_state_.acc_bias.z(),
+            //     current_state_.gyro_bias.x(), current_state_.gyro_bias.y(), current_state_.gyro_bias.z());
+            
+            // Store orientation before update
+            Eigen::Quaterniond orientation_before = current_state_.orientation;
+            
+            // Update orientation with simple integration for real-time
+            Eigen::Vector3d angle_axis = gyro_corrected * dt;
+            Eigen::Quaterniond dq = deltaQ(angle_axis);
+            
+            // Update orientation
+            current_state_.orientation = (current_state_.orientation * dq).normalized();
+            
+            // Get gravity in sensor frame (average of before and after rotation)
+            Eigen::Vector3d gravity_sensor1 = orientation_before.inverse() * gravity_world_;
+            Eigen::Vector3d gravity_sensor2 = current_state_.orientation.inverse() * gravity_world_;
+            Eigen::Vector3d gravity_sensor = 0.5 * (gravity_sensor1 + gravity_sensor2);
+            
+            // Remove gravity from accelerometer reading (accelerometer measures gravity + acceleration)
+            // In ENU frame with Z-up, gravity is [0, 0, -9.81], so we add the gravity_sensor vector
+            Eigen::Vector3d acc_without_gravity = acc_corrected + gravity_sensor;
+            // ROS_INFO("IMU gravity compensation: raw=[%.2f, %.2f, %.2f], gravity_sensor=[%.2f, %.2f, %.2f], corrected=[%.2f, %.2f, %.2f]",
+            //         acc_corrected.x(), acc_corrected.y(), acc_corrected.z(),
+            //         gravity_sensor.x(), gravity_sensor.y(), gravity_sensor.z(),
+            //         acc_without_gravity.x(), acc_without_gravity.y(), acc_without_gravity.z());
+            
+            // Rotate to world frame using midpoint rotation
+            Eigen::Quaterniond orientation_mid = orientation_before.slerp(0.5, current_state_.orientation);
+            Eigen::Vector3d acc_world = orientation_mid * acc_without_gravity;
+            
+            // Store velocity before update for trapezoidal integration
+            Eigen::Vector3d velocity_before = current_state_.velocity;
+            
+            // Update velocity
+            current_state_.velocity += acc_world * dt;
+            
+            // IMPROVED: For high-speed scenarios - remove vertical damping
+            // Only apply slight damping if we have a large spurious vertical velocity
+            // double v_vel_abs = std::abs(current_state_.velocity.z());
+            // if (v_vel_abs > 5.0) {  // Only dampen extreme vertical velocities
+            //     current_state_.velocity.z() *= 0.95;  // Mild damping only on extreme values
+            // }
+            
+            // Adaptive max velocity based on IMU data for real-time propagation
+            double adaptive_max_vel = max_velocity_;
+            if (imu_buffer_.size() > 10) {
+                adaptive_max_vel = std::max(max_velocity_, estimateMaxVelocityFromImu());
+            }
+            
+            // Ensure velocity stays within reasonable limits while preserving direction
+            clampVelocity(current_state_.velocity, adaptive_max_vel);
+            
+            // Update position using trapezoidal integration
+            current_state_.position += 0.5 * (velocity_before + current_state_.velocity) * dt;
             }
             
             // Update timestamp

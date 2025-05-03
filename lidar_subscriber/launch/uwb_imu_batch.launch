@@ -14,7 +14,7 @@
     
     <!-- When true, GPS orientation is used to initialize each new keyframe's orientation -->
     <!-- This provides a good starting point for orientation before IMU integration takes over -->
-    <arg name="use_gps_orientation_as_initial" default="true" 
+    <arg name="use_gps_orientation_as_initial" default="false" 
          doc="Use GPS orientation as initial value for each keyframe" />
     
     <!-- When true, GPS orientation is used as a constraint during optimization -->
@@ -24,14 +24,18 @@
     
     <!-- CRITICAL: When true, GPS velocity is used to initialize velocity at each keyframe -->
     <!-- This is essential for stable velocity estimation -->
-    <arg name="use_gps_velocity" default="true" 
+    <arg name="use_gps_velocity" default="false" 
          doc="Use GPS velocity to initialize each keyframe. If enable_velocity_constraint is false, GPS velocity is only used for initialization, not as a constraint." />
 
     <!-- ============================== TOPIC NAMES ============================== -->
     <!-- ROS topics where sensor data is published -->
     <arg name="imu_topic" default="/imu/data" 
          doc="Topic for IMU measurements (orientation, angular velocity, linear acceleration)" />
-    <arg name="gps_topic" default="/gnss_preprocessor_node/odometryECEF" 
+    <!-- <arg name="gps_topic" default="/gnss_preprocessor_node/ECEFFloatRTK" 
+         doc="Topic for GPS/INS measurements (position, velocity, orientation)" /> -->
+     <!-- <arg name="gps_topic" default="/gnss_preprocessor_node/odometryECEF" 
+          doc="Topic for GPS/INS measurements (position, velocity, orientation)" /> -->
+     <arg name="gps_topic" default="/novatel_data/inspvax" 
          doc="Topic for GPS/INS measurements (position, velocity, orientation)" />
     <arg name="uwb_topic" default="/sensor_simulator/UWBPoistionPS" 
          doc="Topic for UWB position measurements (position only)" />
@@ -57,9 +61,9 @@
          doc="Gyroscope bias noise (rad/s). Higher values allow more IMU influence." />
     
     <!-- GPS noise parameters - affect how tightly estimates adhere to GPS -->
-    <arg name="gps_position_noise" default="0.5" 
+    <arg name="gps_position_noise" default="5" 
          doc="GPS position measurement noise (m). Higher values allow more IMU influence." />
-    <arg name="gps_velocity_noise" default="0.1" 
+    <arg name="gps_velocity_noise" default="1" 
          doc="GPS velocity measurement noise (m/s). Higher values allow more IMU influence." />
     <arg name="gps_orientation_noise" default="0.1" 
          doc="GPS orientation measurement noise (rad). Higher values trust GPS orientation less." />
@@ -87,7 +91,7 @@
     <!-- Controls how optimization is performed -->
     <arg name="optimization_window_size" default="10" 
          doc="Number of keyframes to maintain in sliding window optimization. Larger windows provide better accuracy but slower performance." />
-    <arg name="optimization_frequency" default="10.0" 
+    <arg name="optimization_frequency" default="1" 
          doc="How often to run the optimizer (Hz). Higher values give more frequent updates but increase CPU usage." />
     <arg name="max_iterations" default="10" 
          doc="Maximum iterations for Ceres solver. Higher values may improve accuracy but increase computation time." />
@@ -98,15 +102,15 @@
     <!-- CORE FEATURES -->
     <arg name="enable_bias_estimation" default="true" 
          doc="Estimate and correct for IMU biases. Almost always should be enabled." />
-    <arg name="enable_marginalization" default="true" 
+    <arg name="enable_marginalization" default="false" 
          doc="Use marginalization to maintain information from older keyframes. Improves stability." />
     
     <!-- ORIENTATION FEATURES -->
-    <arg name="enable_roll_pitch_constraint" default="true" 
+    <arg name="enable_roll_pitch_constraint" default="false" 
          doc="Constrain roll and pitch to be near zero (assumes ground vehicle on flat terrain)." />
     <arg name="enable_gravity_alignment_factor" default="false" 
          doc="Use accelerometer to align with gravity. Usually disabled for vehicles with significant acceleration." />
-    <arg name="enable_orientation_smoothness_factor" default="true" 
+    <arg name="enable_orientation_smoothness_factor" default="false" 
          doc="Enforce smooth changes in orientation between keyframes." />
     <arg name="enable_imu_orientation_factor" default="false" 
          doc="Use IMU's orientation measurement as a constraint (typically disabled as we prefer integration)." />
