@@ -2524,7 +2524,7 @@ private:
 
             // TESTING: Add artificial noise to GPS position if in test mode
             if (true) {
-                double gps_noise_magnitude_ = 5.0;
+                double gps_noise_magnitude_ = 2.0;
                 // Only add noise to every nth message to create visible outliers
                 static int msg_counter = 0;
                 
@@ -2618,6 +2618,9 @@ private:
                     initializeFromGps(measurement);
                     is_initialized_ = true;
                     current_preint_test.reset();
+                    current_preint_test.setBias(initial_acc_bias_, initial_gyro_bias_);
+                    current_preint_test.set_gravity(gravity_magnitude_);
+                    current_preint_test.set_noise(imu_acc_noise_, imu_gyro_noise_, imu_acc_bias_noise_, imu_gyro_bias_noise_);
                 } else {
                     ROS_INFO_THROTTLE(1.0, "Waiting for IMU data before GPS initialization...");
                 }
