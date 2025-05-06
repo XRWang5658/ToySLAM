@@ -1,5 +1,10 @@
 <launch>
 
+     <arg name="results_log_path" default="/root/toyslam_ws/src/data/results_log.txt" 
+         doc="Path for the optimization results log file (parameters). Empty generates default name." />
+     <arg name="metrics_log_path" default="/root/toyslam_ws/src/data/metrics_log.txt" 
+         doc="Path for the optimization metrics log file (summary/computation). Empty generates default name." />
+
      <!--Most Critical: Gravity Acc-->
      <arg name="gravity_magnitude" default="9.81" 
          doc="Gravity acceleration in m/s². Default is 9.785 m/s². for Hong Kong, it can vary depends on the latitude" />
@@ -168,6 +173,10 @@
         <!-- Pass all parameters to the node -->
 
         <param name="gravity_magnitude" value="$(arg gravity_magnitude)" />
+
+        <!-- Log file paths -->
+          <param name="results_log_path" value="$(arg results_log_path)" />
+          <param name="metrics_log_path" value="$(arg metrics_log_path)" />
         
         <!-- Topic configuration -->
         <param name="imu_topic" value="$(arg imu_topic)" />
