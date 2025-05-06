@@ -1,7 +1,7 @@
 <launch>
 
      <!--Most Critical: Gravity Acc-->
-     <arg name="gravity_magnitude" default="9.785" 
+     <arg name="gravity_magnitude" default="9.81" 
          doc="Gravity acceleration in m/s². Default is 9.785 m/s². for Hong Kong, it can vary depends on the latitude" />
     <!-- ============================== SENSOR FUSION MODE ============================== -->
     <!-- Determines whether to use GPS or UWB for position measurements -->
@@ -24,7 +24,7 @@
     
     <!-- CRITICAL: When true, GPS velocity is used to initialize velocity at each keyframe -->
     <!-- This is essential for stable velocity estimation -->
-    <arg name="use_gps_velocity" default="false" 
+    <arg name="use_gps_velocity" default="true" 
          doc="Use GPS velocity to initialize each keyframe. If enable_velocity_constraint is false, GPS velocity is only used for initialization, not as a constraint." />
 
     <!-- ============================== TOPIC NAMES ============================== -->
@@ -51,13 +51,13 @@
     <!-- These values model the uncertainty in sensor measurements -->
     
     <!-- IMU noise parameters - affect integration accuracy and bias estimation -->
-    <arg name="imu_acc_noise" default="0.03" 
+    <arg name="imu_acc_noise" default="0.2" 
          doc="Accelerometer white noise (m/s²). Higher values trust accelerometer less." />
-    <arg name="imu_gyro_noise" default="0.002" 
+    <arg name="imu_gyro_noise" default="0.03" 
          doc="Gyroscope white noise (rad/s). Higher values trust gyroscope less." />
-    <arg name="imu_acc_bias_noise" default="0.00001"
+    <arg name="imu_acc_bias_noise" default="0.001"
          doc="Accelerometer bias noise (m/s²). Higher values allow more IMU influence." />
-    <arg name="imu_gyro_bias_noise" default="0.00001"
+    <arg name="imu_gyro_bias_noise" default="0.0001"
          doc="Gyroscope bias noise (rad/s). Higher values allow more IMU influence." />
     
     <!-- GPS noise parameters - affect how tightly estimates adhere to GPS -->
@@ -141,9 +141,9 @@
     <!-- Weights for different constraints in the optimization -->
     <arg name="roll_pitch_weight" default="300.0" 
          doc="Weight for roll/pitch constraints. Higher values enforce more level orientation." />
-    <arg name="imu_orientation_weight" default="50.0" 
+    <arg name="imu_orientation_weight" default="1.0" 
          doc="Weight for IMU orientation factor. Only used if enable_imu_orientation_factor is true." />
-    <arg name="bias_constraint_weight" default="1000.0" 
+    <arg name="bias_constraint_weight" default="10.0" 
          doc="Weight for bias magnitude constraints. Higher values limit biases to smaller values." />
     <arg name="velocity_constraint_weight" default="150.0" 
          doc="Weight for velocity magnitude constraint. Only used if enable_velocity_constraint is true." />

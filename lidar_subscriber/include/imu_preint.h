@@ -14,6 +14,7 @@ Date: 2025-04-29
 #include <ceres/ceres.h>
 #include <ceres/rotation.h>
 #include <vector>
+#include "utility.h"
 
 static Eigen::Quaterniond deltaQ(const Eigen::Vector3d &theta)
 {
@@ -55,7 +56,8 @@ public:
 
         sum_dt = 0.0;
         jacobian.setIdentity();
-        covariance.setZero();
+        covariance.setIdentity();
+        covariance = 1e-3 * covariance;
 
         // set default gravity  
         set_gravity(9.785);
@@ -82,15 +84,19 @@ public:
         acc_buf.push_back(acc);
         gyro_buf.push_back(gyro);
 
+        // ROS_INFO("IMU data pushed back: %f", stamp);
+
         // if this is the first IMU data, return directly to avoid integration
         if (stamp_buf.size() <= 1)
         {
+            ROS_INFO("First IMU data, no integration needed");
             return true;
         }
         // else, perform the integration in real time
 
         if(!propagate(stamp_buf.size() - 1))
-        {
+        {   
+            ROS_WARN("IMU data propagation failed");
             return false;
         }
 
@@ -130,6 +136,8 @@ public:
 
         // calculate the new alpha
         alpha_new = alpha + beta * dt + 0.5 * acc_avg * dt * dt;     
+
+        gamma_new.normalize();
         
         // update the jacobian and covariance if requested
         if(update_jacobian){
@@ -190,11 +198,19 @@ public:
             jacobian  = F * jacobian;
             covariance = F * covariance * F.transpose() + V * noise * V.transpose();
         }
+
+        return true;
     }
 
     bool propagate(int index){
         // get the imu data at the given index
         double dt = stamp_buf[index] - stamp_buf[index - 1];
+        if (dt <= 0.0)
+        {
+            ROS_INFO("imu preintegration error! dt <= 0.0");
+            return false;
+        }
+
         Eigen::Vector3d raw_acc1 = acc_buf[index - 1];
         Eigen::Vector3d raw_acc2 = acc_buf[index];
         Eigen::Vector3d raw_gyro1 = gyro_buf[index - 1];
@@ -204,7 +220,8 @@ public:
         Eigen::Quaterniond gamma_propagated;
 
         if(!midpoint_integrate(dt, raw_acc1, raw_acc2, raw_gyro1, raw_gyro2, alpha, beta, gamma, alpha_propagated, beta_propagated, gamma_propagated, true))
-        {
+        {   
+            ROS_WARN("IMU preintegration error! midpoint integration failed");
             return false;
         }
 
@@ -212,6 +229,7 @@ public:
         alpha = alpha_propagated;
         beta = beta_propagated;
         gamma = gamma_propagated;
+
         
         sum_dt += dt;
 
@@ -262,7 +280,7 @@ public:
         Eigen::Vector3d dba = Bai - ba;
         Eigen::Vector3d dbg = Bgi - bg;
 
-        Eigen::Quaterniond corrected_delta_q = gamma * deltaQ(dq_dbg * dbg);
+        Eigen::Quaterniond corrected_delta_q = gamma * Utility::deltaQ(dq_dbg * dbg);
         Eigen::Vector3d corrected_delta_v = beta + dv_dba * dba + dv_dbg * dbg;
         Eigen::Vector3d corrected_delta_p = alpha + dp_dba * dba + dp_dbg * dbg;
 

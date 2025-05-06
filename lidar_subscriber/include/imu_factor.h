@@ -18,7 +18,7 @@
         virtual bool Evaluate(
             double const* const* parameters,
             double* residuals,
-            double** jacobians) const override{
+            double** jacobians) const{
 
                 // parameters[0] -> [Pi(3), Qi(4)]
                 // parameters[1] -> [Vi(3)]
@@ -27,29 +27,30 @@
                 // parameters[4] -> [Vj(3)]
                 // parameters[5] -> [Baj(3), Bgj(3)]
 
-                Eigen::Map<const Eigen::Vector3d> Pi(parameters[0]);
-                Eigen::Map<const Eigen::Quaterniond> Qi(parameters[0] + 3);
+                Eigen::Vector3d Pi(parameters[0][0], parameters[0][1], parameters[0][2]);
+                Eigen::Quaterniond Qi(parameters[0][3], parameters[0][4], parameters[0][5], parameters[0][6]);
 
-                Eigen::Map<const Eigen::Vector3d> Vi(parameters[1]);
-                Eigen::Map<const Eigen::Vector3d> Bai(parameters[2]);
-                Eigen::Map<const Eigen::Vector3d> Bgi(parameters[2] + 3);
+                Eigen::Vector3d Vi(parameters[1][0], parameters[1][1], parameters[1][2]);
+                Eigen::Vector3d Bai(parameters[2][0], parameters[2][1], parameters[2][2]);
+                Eigen::Vector3d Bgi(parameters[2][3], parameters[2][4], parameters[2][5]);
 
-                Eigen::Map<const Eigen::Vector3d> Pj(parameters[3]);
-                Eigen::Map<const Eigen::Quaterniond> Qj(parameters[3] + 3);
+                Eigen::Vector3d Pj(parameters[3][0], parameters[3][1], parameters[3][2]);
+                Eigen::Quaterniond Qj(parameters[3][3], parameters[3][4], parameters[3][5], parameters[3][6]);
 
-                Eigen::Map<const Eigen::Vector3d> Vj(parameters[4]);
-                Eigen::Map<const Eigen::Vector3d> Baj(parameters[5]);
-                Eigen::Map<const Eigen::Vector3d> Bgj(parameters[5] + 3);
+                Eigen::Vector3d Vj(parameters[4][0], parameters[4][1], parameters[4][2]);
+                Eigen::Vector3d Baj(parameters[5][0], parameters[5][1], parameters[5][2]);
+                Eigen::Vector3d Bgj(parameters[5][3], parameters[5][4], parameters[5][5]);
 
                 Eigen::Matrix<double, 15, 1> residual = preint->evaluate(
                     Pi, Qi, Vi, Bai, Bgi,
                     Pj, Qj, Vj, Baj, Bgj
                 );
-
+                // ROS_INFO_STREAM("residual: " << residual.transpose());
                 Eigen::Matrix<double, 15, 15> sqrt_info = Eigen::LLT<Eigen::Matrix<double, 15, 15>>(preint->getCovariance().inverse()).matrixL().transpose();
-                residual = sqrt_info * residual;             
+                // sqrt_info = sqrt_info * 1e-2;
+                residual = sqrt_info * residual;  
+                // ROS_INFO_STREAM("sqrt_info * residual: " << residual.transpose());           
                 Eigen::Map<Eigen::Matrix<double, 15, 1>> residuals_map(residuals); 
-                // 2. 将计算得到的 Eigen 向量赋值给这个 Map 对象
                 residuals_map = residual;
 
                 if (jacobians) {

@@ -2854,7 +2854,21 @@ private:
             // Set orientation only if configured to use GPS orientation
             if (use_gps_orientation_as_initial_) {
                 propagated_state_gps.orientation = gps.orientation;
+            } else {
+                // use IMU orientation if not using GPS
+                // Keep current orientation or try to use IMU
+                sensor_msgs::Imu closest_imu = findClosestImuMeasurement(gps.timestamp);
+                if (closest_imu.header.stamp.toSec() > 0 && 
+                    closest_imu.orientation_covariance[0] != -1) {
+                        propagated_state_gps.orientation = Eigen::Quaterniond(
+                        closest_imu.orientation.w,
+                        closest_imu.orientation.x,
+                        closest_imu.orientation.y,
+                        closest_imu.orientation.z
+                    ).normalized();
+                } 
             }
+            
             
             /// Set velocity only if configured to use GPS velocity
             if (use_gps_velocity_) {
@@ -2868,7 +2882,11 @@ private:
                 //         vel_norm, vel_norm * 3.6);
             }
             
-            propagated_state_gps.timestamp = gps.timestamp;
+            propagated_state_gps.timestamp = gps.timestamp; 
+
+            // initialize the gps state bias from last keyframe
+            propagated_state_gps.acc_bias = last_keyframe.acc_bias;
+            propagated_state_gps.gyro_bias = last_keyframe.gyro_bias;
             
             // CRITICAL: Ensure biases are reasonable in the new keyframe
             clampBiases(propagated_state_gps.acc_bias, propagated_state_gps.gyro_bias);
@@ -3265,10 +3283,22 @@ private:
     // Modify the imuCallback function to handle 400Hz IMU data
     void imuCallback(const sensor_msgs::Imu::ConstPtr& msg) {
         try {
+
+            std::lock_guard<std::mutex> lock(data_mutex_);
+            // add IMU measurement to the preintegration map
+            // extract the data first, including the stamp in seconds, the acceleration, and the angular velocity
+            double unix_timestamp = msg->header.stamp.toSec();
+            Eigen::Vector3d acc(msg->linear_acceleration.x, msg->linear_acceleration.y, msg->linear_acceleration.z);
+            Eigen::Vector3d gyro(msg->angular_velocity.x, msg->angular_velocity.y, msg->angular_velocity.z);
+            // add the IMU measurement to the preintegration map
+            current_preint_test.push_back(unix_timestamp, acc, gyro);
+            // ROS_INFO("[IMU] %f, %f, %f, %f, %f, %f", unix_timestamp, acc.x(), acc.y(), acc.z(), gyro.x(), gyro.y(), gyro.z());
+            
+
             static int imu_count = 0;
             static double last_report_time = 0;
             
-            std::lock_guard<std::mutex> lock(data_mutex_);
+            // std::lock_guard<std::mutex> lock(data_mutex_);
             
             double timestamp = msg->header.stamp.toSec();
             has_imu_data_ = true;
@@ -3332,13 +3362,13 @@ private:
                 }
             }
 
-            // add IMU measurement to the preintegration map
-            // extract the data first, including the stamp in seconds, the acceleration, and the angular velocity
-            double unix_timestamp = msg->header.stamp.toSec();
-            Eigen::Vector3d acc(msg->linear_acceleration.x, msg->linear_acceleration.y, msg->linear_acceleration.z);
-            Eigen::Vector3d gyro(msg->angular_velocity.x, msg->angular_velocity.y, msg->angular_velocity.z);
-            // add the IMU measurement to the preintegration map
-            current_preint_test.push_back(unix_timestamp, acc, gyro);
+            // // add IMU measurement to the preintegration map
+            // // extract the data first, including the stamp in seconds, the acceleration, and the angular velocity
+            // double unix_timestamp = msg->header.stamp.toSec();
+            // Eigen::Vector3d acc(msg->linear_acceleration.x, msg->linear_acceleration.y, msg->linear_acceleration.z);
+            // Eigen::Vector3d gyro(msg->angular_velocity.x, msg->angular_velocity.y, msg->angular_velocity.z);
+            // // add the IMU measurement to the preintegration map
+            // current_preint_test.push_back(unix_timestamp, acc, gyro);
 
         } catch (const std::exception& e) {
             ROS_ERROR("Exception in imuCallback: %s", e.what());
@@ -3852,8 +3882,12 @@ private:
     {
         // save the preint data to the map
         preintegration_map_test[std::make_pair(start_time, end_time)] = current_preint_test;
-        // print the preint data
-        ROS_INFO("Preintegration data saved for keyframes: [%.3f, %.3f]", start_time, end_time);
+
+        // ROS_INFO("Current preint data:");
+        // ROS_INFO("delta_p: %f, %f, %f", current_preint_test.getDeltaAlpha().x(), current_preint_test.getDeltaAlpha().y(), current_preint_test.getDeltaAlpha().z());
+
+        // // print the preint data
+        // ROS_INFO("Preintegration data saved for keyframes: [%.3f, %.3f]", start_time, end_time);
         
         // reset the current preint data to accept imu messages for next one
         current_preint_test.reset();
@@ -4807,11 +4841,19 @@ private:
                                 gps.position, gps_position_noise_);
                             
                             problem.AddResidualBlock(gps_pos_factor, NULL, variables[i].pose);
-                            ROS_INFO("Add GPS position factor, keyframe_time=%.3f", keyframe_time);
-                            ROS_INFO("GPS position: [%.2f, %.2f, %.2f]", 
-                                    gps.position.x(), gps.position.y(), gps.position.z());
-                            ROS_INFO("State position: [%.2f, %.2f, %.2f]", 
-                                    variables[i].pose[0], variables[i].pose[1], variables[i].pose[2]);
+                            // ROS_INFO("Add GPS position factor, keyframe_time=%.3f", keyframe_time);
+                            // ROS_INFO("GPS position: [%.2f, %.2f, %.2f]", 
+                            //         gps.position.x(), gps.position.y(), gps.position.z());
+                            // ROS_INFO("State position: [%.2f, %.2f, %.2f]", 
+                            //         variables[i].pose[0], variables[i].pose[1], variables[i].pose[2]);
+
+                            // 计算初始 residual
+                            // double residuals[3];
+                            // double* parameters[1] = {variables[i].pose};
+                            // gps_pos_factor->Evaluate(parameters, residuals, nullptr);
+
+                            // ROS_INFO("Initial Residuals for GPS position factor at keyframe_time=%.3f: [%.6f, %.6f, %.6f]",
+                            //         keyframe_time, residuals[0], residuals[1], residuals[2]);
                             
                             // Add velocity factor if configured to use GPS velocity
                             if (use_gps_velocity_ && enable_velocity_constraint_) {
@@ -4856,6 +4898,7 @@ private:
             
             // Add roll/pitch constraint to enforce planar motion if enabled
             if (enable_roll_pitch_constraint_) {
+                ROS_INFO("Added roll/pitch constraints");
                 for (size_t i = 0; i < state_window_.size(); ++i) {
                     ceres::CostFunction* roll_pitch_prior = RollPitchPriorFactor::Create(roll_pitch_weight_);
                     problem.AddResidualBlock(roll_pitch_prior, nullptr, variables[i].pose);
@@ -4864,6 +4907,7 @@ private:
             
             // Add gravity alignment factors if enabled
             if (enable_gravity_alignment_factor_) {
+                ROS_INFO("Added gravity alignment factors");
                 for (size_t i = 0; i < state_window_.size(); ++i) {
                     double keyframe_time = state_window_[i].timestamp;
                     
@@ -4888,6 +4932,7 @@ private:
             
             // Add orientation smoothness constraints between consecutive keyframes if enabled
             if (enable_orientation_smoothness_factor_) {
+                ROS_INFO("Added orientation smoothness factors");
                 for (size_t i = 0; i < state_window_.size() - 1; ++i) {
                     ceres::CostFunction* orientation_smoothness = 
                         OrientationSmoothnessFactor::Create(orientation_smoothness_weight_);
@@ -4908,6 +4953,7 @@ private:
             
             // Add IMU orientation factors if enabled
             if (enable_imu_orientation_factor_) {
+                ROS_INFO("Added IMU orientation factors");
                 for (size_t i = 0; i < state_window_.size(); ++i) {
                     double keyframe_time = state_window_[i].timestamp;
                     
@@ -4928,6 +4974,7 @@ private:
             
             // CRITICAL: Add hard constraints on bias magnitude if bias estimation is enabled
             if (enable_bias_estimation_) {
+                ROS_INFO("Added bias magnitude constraints");
                 for (size_t i = 0; i < state_window_.size(); ++i) {
                     ceres::CostFunction* bias_constraint = BiasMagnitudeConstraint::Create(
                         acc_bias_max_, gyro_bias_max_, bias_constraint_weight_);
@@ -4938,6 +4985,7 @@ private:
             
             // IMPROVED: Add adaptive velocity magnitude constraints if enabled
             if (enable_velocity_constraint_) {
+                ROS_INFO("Added adaptive velocity magnitude constraints");
                 // Estimate max velocity from IMU data for adaptive constraints
                 double adaptive_max_velocity = max_velocity_;
                 if (imu_buffer_.size() > 10) {
@@ -4953,6 +5001,7 @@ private:
             
             // FIXED: Add horizontal velocity incentive factors that only enforce minimum magnitude
             if (enable_horizontal_velocity_incentive_) {
+                ROS_INFO("Added horizontal velocity incentive factors");
                 for (size_t i = 0; i < state_window_.size(); ++i) {
                     ceres::CostFunction* h_vel_incentive = HorizontalVelocityIncentiveFactor::Create(
                         min_horizontal_velocity_, horizontal_velocity_weight_);
@@ -4989,6 +5038,10 @@ private:
                                            variables[i+1].pose, variables[i+1].velocity, variables[i+1].bias);
 
                     ROS_INFO("Add IMU factor between keyframes [%.3f-%.3f]", start_time, end_time);
+                    // ROS_INFO("IMU preintegration: dt=%.3f, dp=[%.3f,%.3f,%.3f], dv=[%.3f,%.3f,%.3f], dq=[%.3f,%.3f,%.3f,%.3f]",
+                    //         preint.get_sum_dt(), preint.getDeltaAlpha().x(), preint.getDeltaAlpha().y(), preint.getDeltaAlpha().z(),
+                    //         preint.getDeltaBeta().x(), preint.getDeltaBeta().y(), preint.getDeltaBeta().z(),
+                    //         preint.getDeltaGamma().w(), preint.getDeltaGamma().x(), preint.getDeltaGamma().y(), preint.getDeltaGamma().z());
                     // ROS_INFO("IMU preintegration: dp=[%.3f,%.3f,%.3f], dv=[%.3f,%.3f,%.3f]",
                     //         preint.alpha.x(), preint.alpha.y(), preint.alpha.z(),
                     //         preint.beta.x(), preint.beta.y(), preint.beta.z());
@@ -4998,6 +5051,15 @@ private:
                     ROS_INFO("State velocities: [%.2f, %.2f, %.2f] [%.2f, %.2f, %.2f]",
                             variables[i].velocity[0], variables[i].velocity[1], variables[i].velocity[2],
                             variables[i+1].velocity[0], variables[i+1].velocity[1], variables[i+1].velocity[2]);
+
+                    // 计算初始 residual
+                    // double residuals[15]; 
+                    // double* parameters[6] = {variables[i].pose, variables[i].velocity, variables[i].bias,
+                    //                         variables[i+1].pose, variables[i+1].velocity, variables[i+1].bias};
+                    // imu_factor_->Evaluate(parameters, residuals, nullptr);
+
+                    // ROS_INFO("Initial Residuals for IMU factor between keyframes [%.3f-%.3f]: [%.6f, %.6f, %.6f, ...]",
+                    //         start_time, end_time, residuals[0], residuals[1], residuals[2]);
                 }
             }
             
@@ -5036,6 +5098,18 @@ private:
                 ROS_INFO("Optimization failed: %s", summary.FullReport().c_str());
                 return false;
             }
+
+            ceres::Problem::EvaluateOptions eval_options;
+            std::vector<double> residuals;
+
+            // Evaluate residuals after optimization
+            problem.Evaluate(eval_options, nullptr, &residuals, nullptr, nullptr);
+
+            // // Print residuals
+            // ROS_INFO("Residuals after optimization:");
+            // for (size_t i = 0; i < residuals.size(); ++i) {
+            //     ROS_INFO("Residual[%zu]: %.6f", i, residuals[i]);
+            // }
 
             // std::cout << summary.FullReport() << std::endl;
 
@@ -5093,11 +5167,18 @@ private:
                     state_window_[i].acc_bias = new_acc_bias;
                     state_window_[i].gyro_bias = new_gyro_bias;
 
-                    // // 打印零偏
-                    // ROS_INFO("Epoch %zu: Acc Bias [%.6f, %.6f, %.6f], Gyro Bias [%.6f, %.6f, %.6f]",
-                    //     i,
-                    //     new_acc_bias.x(), new_acc_bias.y(), new_acc_bias.z(),
-                    //     new_gyro_bias.x(), new_gyro_bias.y(), new_gyro_bias.z());
+                    // 打印零偏
+                    ROS_INFO("Epoch %zu: Acc Bias [%.6f, %.6f, %.6f], Gyro Bias [%.6f, %.6f, %.6f]",
+                        i,
+                        new_acc_bias.x(), new_acc_bias.y(), new_acc_bias.z(),
+                        new_gyro_bias.x(), new_gyro_bias.y(), new_gyro_bias.z());
+
+                    // std::pair<double, double> key(state_window_[i].timestamp, state_window_[i+1].timestamp);
+                    // // repropagate calculating the preintegration
+                    // if (preintegration_map_test.find(key) != preintegration_map_test.end()) {
+                    //     auto& preint = preintegration_map_test[key];
+                    //     preint.repropagate(new_acc_bias, new_gyro_bias);
+                    // }
                 }
             }
             
