@@ -30,6 +30,9 @@ GNSS_Tools m_GNSS_Tools;
 #include "../include/imu_preint.h"
 #include "../include/imu_factor.h"
 
+// added for logging result from ceres, and other information inlcuding computation load
+#include "../include/ceres_logger.h"
+
 // Custom parameterization for pose (position + quaternion)
 class PoseParameterization : public ceres::LocalParameterization {
 public:
@@ -1456,6 +1459,103 @@ public:
         private_nh.param<double>("max_integration_dt", max_integration_dt_, 0.005); // Reduced for high-speed scenarios
         private_nh.param<double>("min_integration_dt", min_integration_dt_, 1e-8); // Minimum step size
         private_nh.param<double>("bias_correction_threshold", bias_correction_threshold_, 0.05); // Threshold for bias validity check
+
+        // ceres logger path initialization
+            std::string results_log_param;
+            std::string metrics_log_param;
+            private_nh.param<std::string>("results_log_path", results_log_param, "");
+            private_nh.param<std::string>("metrics_log_path", metrics_log_param, "");
+            std::string final_results_log_path = results_log_param;
+            std::string final_metrics_log_path = metrics_log_param;
+            // generate file name based on current time, if the param is empty
+            if (final_results_log_path.empty()) {
+                std::time_t now = std::time(nullptr);
+                std::stringstream ss_results;
+                char mbstr[100];
+                if (std::strftime(mbstr, sizeof(mbstr), "%Y%m%d_%H%M%S", std::localtime(&now))) {
+                    ss_results << "default_fusion_results_" << mbstr << ".txt";
+                } else { // Fallback if strftime fails
+                    ss_results << "default_fusion_results_" << now << ".txt";
+                }
+                final_results_log_path = ss_results.str();
+                ROS_INFO("Parameter 'results_log_path' is empty. Using default filename: %s", final_results_log_path.c_str());
+            }
+
+            if (final_metrics_log_path.empty()) {
+                std::time_t now = std::time(nullptr);
+                std::stringstream ss_metrics;
+                char mbstr[100];
+                if (std::strftime(mbstr, sizeof(mbstr), "%Y%m%d_%H%M%S", std::localtime(&now))) {
+                    ss_metrics << "default_fusion_metrics_" << mbstr << ".txt";
+                } else { // Fallback if strftime fails
+                    ss_metrics << "default_fusion_metrics_" << now << ".txt";
+                }
+                final_metrics_log_path = ss_metrics.str();
+                ROS_INFO("Parameter 'metrics_log_path' is empty. Using default filename: %s", final_metrics_log_path.c_str());
+            }
+            logger_.initialize(final_results_log_path, final_metrics_log_path);
+
+            // --- ★ Log Static Configuration ONCE Here ★ ---
+            ROS_INFO("Logging static configuration parameters...");
+            logger_.addMetadata("Config: Gravity Magnitude", std::to_string(gravity_magnitude_));
+            logger_.addMetadata("Config: Use GPS Instead of UWB", use_gps_instead_of_uwb_ ? "True" : "False");
+            logger_.addMetadata("Config: Use GPS Orientation as Initial", use_gps_orientation_as_initial_ ? "True" : "False");
+            logger_.addMetadata("Config: Use GPS Orientation as Constraint", use_gps_orientation_as_constraint_ ? "True" : "False");
+            logger_.addMetadata("Config: Use GPS Velocity", use_gps_velocity_ ? "True" : "False");
+            logger_.addMetadata("Config: IMU Topic", imu_topic_);
+            logger_.addMetadata("Config: GPS Topic", gps_topic_);
+            logger_.addMetadata("Config: UWB Topic", uwb_topic_);
+            logger_.addMetadata("Config: World Frame ID", world_frame_id_);
+            logger_.addMetadata("Config: Body Frame ID", body_frame_id_);
+            logger_.addMetadata("Config: IMU Acc Noise", std::to_string(imu_acc_noise_));
+            logger_.addMetadata("Config: IMU Gyro Noise", std::to_string(imu_gyro_noise_));
+            logger_.addMetadata("Config: IMU Acc Bias Noise", std::to_string(imu_acc_bias_noise_));
+            logger_.addMetadata("Config: IMU Gyro Bias Noise", std::to_string(imu_gyro_bias_noise_));
+            logger_.addMetadata("Config: GPS Pos Noise", std::to_string(gps_position_noise_));
+            logger_.addMetadata("Config: GPS Vel Noise", std::to_string(gps_velocity_noise_));
+            logger_.addMetadata("Config: GPS Orient Noise", std::to_string(gps_orientation_noise_));
+            logger_.addMetadata("Config: UWB Pos Noise", std::to_string(uwb_position_noise_));
+            logger_.addMetadata("Config: Initial Acc Bias X", std::to_string(initial_acc_bias_x_));
+            logger_.addMetadata("Config: Initial Acc Bias Y", std::to_string(initial_acc_bias_y_));
+            logger_.addMetadata("Config: Initial Acc Bias Z", std::to_string(initial_acc_bias_z_));
+            logger_.addMetadata("Config: Initial Gyro Bias X", std::to_string(initial_gyro_bias_x_));
+            logger_.addMetadata("Config: Initial Gyro Bias Y", std::to_string(initial_gyro_bias_y_));
+            logger_.addMetadata("Config: Initial Gyro Bias Z", std::to_string(initial_gyro_bias_z_));
+            logger_.addMetadata("Config: Optimization Window Size", std::to_string(optimization_window_size_));
+            logger_.addMetadata("Config: Optimization Frequency (Hz)", std::to_string(optimization_frequency_));
+            logger_.addMetadata("Config: Max Iterations (Param)", std::to_string(max_iterations_)); // Log the configured value
+            logger_.addMetadata("Config: Enable Bias Estimation", enable_bias_estimation_ ? "True" : "False");
+            logger_.addMetadata("Config: Enable Marginalization", enable_marginalization_ ? "True" : "False");
+            logger_.addMetadata("Config: Enable Roll/Pitch Constraint", enable_roll_pitch_constraint_ ? "True" : "False");
+            logger_.addMetadata("Config: Enable Gravity Alignment Factor", enable_gravity_alignment_factor_ ? "True" : "False");
+            logger_.addMetadata("Config: Enable Orientation Smoothness Factor", enable_orientation_smoothness_factor_ ? "True" : "False");
+            logger_.addMetadata("Config: Enable Velocity Constraint", enable_velocity_constraint_ ? "True" : "False");
+            logger_.addMetadata("Config: Enable Horizontal Velocity Incentive", enable_horizontal_velocity_incentive_ ? "True" : "False");
+            logger_.addMetadata("Config: Enable IMU Orientation Factor", enable_imu_orientation_factor_ ? "True" : "False");
+            logger_.addMetadata("Config: Bias Max Acc", std::to_string(acc_bias_max_));
+            logger_.addMetadata("Config: Bias Max Gyro", std::to_string(gyro_bias_max_));
+            logger_.addMetadata("Config: Roll/Pitch Weight", std::to_string(roll_pitch_weight_));
+            logger_.addMetadata("Config: IMU Orientation Weight", std::to_string(imu_orientation_weight_));
+            logger_.addMetadata("Config: Bias Constraint Weight", std::to_string(bias_constraint_weight_));
+            logger_.addMetadata("Config: Max Velocity Setting", std::to_string(max_velocity_));
+            logger_.addMetadata("Config: Velocity Constraint Weight", std::to_string(velocity_constraint_weight_));
+            logger_.addMetadata("Config: Min Horizontal Velocity", std::to_string(min_horizontal_velocity_));
+            logger_.addMetadata("Config: Horizontal Velocity Weight", std::to_string(horizontal_velocity_weight_));
+            logger_.addMetadata("Config: Orientation Smoothness Weight", std::to_string(orientation_smoothness_weight_));
+            logger_.addMetadata("Config: Gravity Alignment Weight", std::to_string(gravity_alignment_weight_));
+            logger_.addMetadata("Config: Max Integration dt", std::to_string(max_integration_dt_));
+            logger_.addMetadata("Config: Bias Correction Threshold", std::to_string(bias_correction_threshold_));
+
+            // ★★★ Call log() immediately after adding static metadata ★★★
+            // The modified log() method in CeresLogger handles this initial call correctly.
+            bool static_log_success = logger_.log();
+            if (!static_log_success) {
+                ROS_ERROR("Failed to write initial static configuration to log files!");
+            } else {
+                ROS_INFO("Static configuration logged successfully.");
+            }
+            // logger_ state is now reset automatically by log().
+        // end of logger initialization
         
         // Initialize with small non-zero biases that match your simulation
         initial_acc_bias_ = Eigen::Vector3d(initial_acc_bias_x_, initial_acc_bias_y_, initial_acc_bias_z_);
@@ -1724,6 +1824,9 @@ private:
     std::map<std::pair<double, double>, ImuPreintegrationBetweenKeyframes> preintegration_map_;
     
     std::deque<sensor_msgs::Imu> imu_buffer_;
+
+    // ceres logger to log optimization results and computation loads
+    CeresLogger logger_;
     
     // UWB measurements
     struct UwbMeasurement {
@@ -2524,7 +2627,7 @@ private:
 
             // TESTING: Add artificial noise to GPS position if in test mode
             if (true) {
-                double gps_noise_magnitude_ = 2.0;
+                double gps_noise_magnitude_ = 5.0;
                 // Only add noise to every nth message to create visible outliers
                 static int msg_counter = 0;
                 
@@ -3889,7 +3992,7 @@ private:
         // // print the preint data
         // ROS_INFO("Preintegration data saved for keyframes: [%.3f, %.3f]", start_time, end_time);
         
-        // reset the current preint data to accept imu messages for next one
+        // reset the current preint data to accept imu messages for next keyframe
         current_preint_test.reset();
     }
 
@@ -4445,7 +4548,7 @@ private:
                 
                 std::pair<double, double> key(start_time, end_time);
                 
-                if (preintegration_map_.find(key) == preintegration_map_.end()) {
+                // if (preintegration_map_.find(key) == preintegration_map_.end()) {
                     // performPreintegrationBetweenKeyframes_(state_window_[i], state_window_[i+1], 
                     //                                      state_window_[i].acc_bias, 
                     //                                      state_window_[i].gyro_bias);
@@ -4453,7 +4556,7 @@ private:
                     //                                       state_window_[i].acc_bias, 
                     //                                       state_window_[i].gyro_bias);
                     // performPreintegrationBetweenKeyframes_()
-                }
+                // }
             }
 
             // Time the factor graph optimization
@@ -5077,6 +5180,9 @@ private:
                 }
             }
             
+            logger_.addMetadata("Problem: Num Residuals", std::to_string(problem.NumResiduals()));
+            logger_.addMetadata("Problem: Num Parameter Blocks", std::to_string(problem.NumParameterBlocks()));
+
             // Configure solver options
             ceres::Solver::Options options;
             options.max_num_iterations = max_iterations_;
@@ -5093,11 +5199,20 @@ private:
             // Solve the optimization problem
             ceres::Solver::Summary summary;
             ceres::Solve(options, &problem, &summary);
+            logger_.setSummary(summary);
             
             if (!summary.IsSolutionUsable()) {
-                ROS_INFO("Optimization failed: %s", summary.FullReport().c_str());
-                return false;
+                ROS_WARN("Optimization failed or solution not usable. Report:\n%s", summary.FullReport().c_str());
+                 logger_.addMetadata("Optimization Status", "Failed - Solution Unusable");
+                 logger_.log(); // ★ Attempt to log partial dynamic info + summary on failure ★
+                 // Restore original settings before returning
+                 enable_horizontal_velocity_incentive_ = original_enable_horizontal_velocity_incentive;
+                 enable_orientation_smoothness_factor_ = original_enable_orientation_smoothness_factor;
+                 max_iterations_ = original_max_iterations;
+                 return false;
             }
+
+            
 
             ceres::Problem::EvaluateOptions eval_options;
             std::vector<double> residuals;
@@ -5229,6 +5344,69 @@ private:
                         //         gps_vel_norm * 3.6, vel_diff, vel_diff * 3.6);
                     }
                 }
+            }
+
+            // --- ★ 7. Add Optimized Parameters to Logger ★ ---
+            // This should happen AFTER the state_window_ has been updated
+            // with the final, potentially clamped/normalized values from the 'variables' array.
+            ROS_INFO("Logging optimized parameters...");
+            for (size_t i = 0; i < state_window_.size(); ++i) {
+                // Get the finalized state from the window
+                const auto& final_state = state_window_[i];
+                // Create a unique prefix for this state's parameters in the log
+                std::string prefix = "State_" + std::to_string(i) + "_"; // e.g., "State_0_", "State_1_"
+
+                // --- Log Pose (Position + Orientation Quaternion) ---
+                std::vector<double> pose_data(7);
+                // Position (x, y, z)
+                pose_data[0] = final_state.position.x();
+                pose_data[1] = final_state.position.y();
+                pose_data[2] = final_state.position.z();
+                // Orientation Quaternion (w, x, y, z) - Ensure correct order w,x,y,z
+                pose_data[3] = final_state.orientation.w();
+                pose_data[4] = final_state.orientation.x();
+                pose_data[5] = final_state.orientation.y();
+                pose_data[6] = final_state.orientation.z();
+                logger_.addParameterBlock(prefix + "Pose", pose_data);
+
+                // --- Log Velocity ---
+                std::vector<double> vel_data(3);
+                vel_data[0] = final_state.velocity.x();
+                vel_data[1] = final_state.velocity.y();
+                vel_data[2] = final_state.velocity.z();
+                logger_.addParameterBlock(prefix + "Velocity", vel_data);
+
+                // --- Log Biases (Accelerometer + Gyroscope) ---
+                std::vector<double> bias_data(6);
+                // Accelerometer Bias (ax, ay, az)
+                bias_data[0] = final_state.acc_bias.x();
+                bias_data[1] = final_state.acc_bias.y();
+                bias_data[2] = final_state.acc_bias.z();
+                // Gyroscope Bias (gx, gy, gz)
+                bias_data[3] = final_state.gyro_bias.x();
+                bias_data[4] = final_state.gyro_bias.y();
+                bias_data[5] = final_state.gyro_bias.z();
+                logger_.addParameterBlock(prefix + "Bias", bias_data);
+
+            } // End of loop through state_window_
+            ROS_INFO("Optimized parameters added to logger.");
+
+
+            // --- ★ 8. Write This Run's Log Entries to Files ★ ---
+            // This call triggers writing the run separator, the dynamic metadata added earlier,
+            // the summary (to the metrics file), and the parameters added above (to the results file).
+            // It also resets the logger's internal state for the next run.
+            ROS_INFO("Writing log entries to files...");
+            bool log_success = logger_.log(); // Call the unified log method
+
+            // Check if logging was successful and report
+            if (!log_success) {
+                // Use the getter methods to report which files failed
+                ROS_WARN("Failed to write optimization logs! Results File: %s, Metrics File: %s",
+                         logger_.getResultsFilename().c_str(), logger_.getMetricsFilename().c_str());
+            } else {
+                ROS_INFO("Optimization logs appended successfully. Results: %s, Metrics: %s",
+                         logger_.getResultsFilename().c_str(), logger_.getMetricsFilename().c_str());
             }
             
             // Increment optimization count
