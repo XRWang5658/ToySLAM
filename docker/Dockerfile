@@ -32,10 +32,8 @@ RUN   apt-get update \
 SHELL ["/bin/bash", "-c"]
       
 RUN   mkdir -p ~/software_ws \
-      && mkdir -p ~/toyslam_ws_ws/src \
+      && mkdir -p ~/toyslam_ws/src \
       && cd ~/toyslam_ws/src \
-      # && git clone https://github.com/Gao-tech1/ToySLAM.git \
-      # && mv ./ToySLAM/support_files/ceres-solver.tar.gz ~/software_ws/ \
       && git clone -b stf_main https://github.com/XRWang5658/ToySLAM.git \
       && mv ./ToySLAM/support_files/ceres-solver.tar.gz ~/software_ws/ \
       && cd ~/software_ws \
@@ -49,8 +47,8 @@ RUN   mkdir -p ~/software_ws \
       && mv /usr/include/flann/ext/lz4.h /usr/include/flann/ext/lz4.h.bak \
       && mv /usr/include/flann/ext/lz4hc.h /usr/include/flann/ext/lz4.h.bak \
       && ln -s /usr/include/lz4.h /usr/include/flann/ext/lz4.h \
-      && ln -s /usr/include/lz4hc.h /usr/include/flann/ext/lz4hc.h \
-      && catkin_make
+      && ln -s /usr/include/lz4hc.h /usr/include/flann/ext/lz4hc.h 
+      #&& catkin_make
       #&& cd ~/toyslam_ws \
       #&& catkin_make
       
