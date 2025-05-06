@@ -11,6 +11,7 @@ Panels:
         - /Velocity Error1
         - /Axes1
         - /Current Pose1
+        - /FinalPath1
       Splitter Ratio: 0.5
     Tree Height: 736
   - Class: rviz/Selection
@@ -67,7 +68,6 @@ Visualization Manager:
         Z: 0
       Pose Color: 255; 85; 255
       Pose Style: None
-      Queue Size: 10
       Radius: 0.029999999329447746
       Shaft Diameter: 0.10000000149011612
       Shaft Length: 0.10000000149011612
@@ -91,7 +91,6 @@ Visualization Manager:
         Z: 0
       Pose Color: 255; 85; 255
       Pose Style: None
-      Queue Size: 10
       Radius: 0.029999999329447746
       Shaft Diameter: 0.10000000149011612
       Shaft Length: 0.10000000149011612
@@ -103,12 +102,7 @@ Visualization Manager:
       Marker Topic: /errors/position
       Name: Position Error
       Namespaces:
-        position_error: true
-        position_error_east: true
-        position_error_north: true
-        position_error_text: true
-        position_error_text_east: true
-        position_error_text_north: true
+        {}
       Queue Size: 100
       Value: true
     - Class: rviz/MarkerArray
@@ -116,14 +110,7 @@ Visualization Manager:
       Marker Topic: /errors/velocity
       Name: Velocity Error
       Namespaces:
-        velocity: true
-        velocity_error_text: true
-        velocity_est_east: true
-        velocity_est_north: true
-        velocity_est_up: true
-        velocity_gps_east: true
-        velocity_gps_north: true
-        velocity_gps_up: true
+        {}
       Queue Size: 100
       Value: true
     - Class: rviz/TF
@@ -133,7 +120,6 @@ Visualization Manager:
       Frame Timeout: 15
       Frames:
         All Enabled: true
-      Marker Alpha: 1
       Marker Scale: 10
       Name: TF
       Show Arrows: true
@@ -143,14 +129,12 @@ Visualization Manager:
         {}
       Update Interval: 0
       Value: false
-    - Alpha: 1
-      Class: rviz/Axes
+    - Class: rviz/Axes
       Enabled: true
       Length: 1
       Name: Axes
       Radius: 0.10000000149011612
       Reference Frame: <Fixed Frame>
-      Show Trail: false
       Value: true
     - Angle Tolerance: 0.10000000149011612
       Class: rviz/Odometry
@@ -173,7 +157,6 @@ Visualization Manager:
       Keep: 1
       Name: Current Pose
       Position Tolerance: 0.10000000149011612
-      Queue Size: 10
       Shape:
         Alpha: 1
         Axes Length: 1
@@ -185,6 +168,29 @@ Visualization Manager:
         Shaft Radius: 0.05000000074505806
         Value: Arrow
       Topic: /uwb_imu_fusion/optimized_pose
+      Unreliable: false
+      Value: true
+    - Alpha: 1
+      Buffer Length: 1
+      Class: rviz/Path
+      Color: 255; 255; 0
+      Enabled: true
+      Head Diameter: 0.30000001192092896
+      Head Length: 0.20000000298023224
+      Length: 0.30000001192092896
+      Line Style: Lines
+      Line Width: 0.029999999329447746
+      Name: FinalPath
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
+      Pose Color: 255; 85; 255
+      Pose Style: None
+      Radius: 0.029999999329447746
+      Shaft Diameter: 0.10000000149011612
+      Shaft Length: 0.10000000149011612
+      Topic: ""
       Unreliable: false
       Value: true
   Enabled: true
@@ -223,6 +229,7 @@ Visualization Manager:
       Near Clip Distance: 0.009999999776482582
       Scale: 3.542551040649414
       Target Frame: map
+      Value: TopDownOrtho (rviz)
       X: -23.377933502197266
       Y: -139.25148010253906
     Saved: ~
@@ -240,5 +247,5 @@ Window Geometry:
   Views:
     collapsed: true
   Width: 1548
-  X: -32
-  Y: -32
+  X: 72
+  Y: 0

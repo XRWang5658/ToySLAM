@@ -51,13 +51,13 @@
     <!-- These values model the uncertainty in sensor measurements -->
     
     <!-- IMU noise parameters - affect integration accuracy and bias estimation -->
-    <arg name="imu_acc_noise" default="0.2" 
+    <arg name="imu_acc_noise" default="1.1751767903346351e-04" 
          doc="Accelerometer white noise (m/s²). Higher values trust accelerometer less." />
-    <arg name="imu_gyro_noise" default="0.03" 
+    <arg name="imu_gyro_noise" default="9.1355383994881894e-05" 
          doc="Gyroscope white noise (rad/s). Higher values trust gyroscope less." />
-    <arg name="imu_acc_bias_noise" default="0.001"
+    <arg name="imu_acc_bias_noise" default="1.1197412605492375e-02"
          doc="Accelerometer bias noise (m/s²). Higher values allow more IMU influence." />
-    <arg name="imu_gyro_bias_noise" default="0.0001"
+    <arg name="imu_gyro_bias_noise" default="1.0270904839480961e-02"
          doc="Gyroscope bias noise (rad/s). Higher values allow more IMU influence." />
     
     <!-- GPS noise parameters - affect how tightly estimates adhere to GPS -->
@@ -74,17 +74,17 @@
     
     <!-- ============================== INITIAL BIAS VALUES ============================== -->
     <!-- Initial values for IMU biases - helps convergence and provides better initial integration -->
-    <arg name="initial_acc_bias_x" default="0.05" 
+    <arg name="initial_acc_bias_x" default="1.2497890470179919e-02" 
          doc="Initial accelerometer bias X component (m/s²)" />
-    <arg name="initial_acc_bias_y" default="-0.05" 
+    <arg name="initial_acc_bias_y" default="1.1299110889447581e-02" 
          doc="Initial accelerometer bias Y component (m/s²)" />
-    <arg name="initial_acc_bias_z" default="0.05" 
+    <arg name="initial_acc_bias_z" default="9.7952364568496281e-03" 
          doc="Initial accelerometer bias Z component (m/s²)" />
-    <arg name="initial_gyro_bias_x" default="0.001" 
+    <arg name="initial_gyro_bias_x" default="1.0220930786530373e-02" 
          doc="Initial gyroscope bias X component (rad/s)" />
-    <arg name="initial_gyro_bias_y" default="-0.001" 
+    <arg name="initial_gyro_bias_y" default="1.0274163606891170e-02" 
          doc="Initial gyroscope bias Y component (rad/s)" />
-    <arg name="initial_gyro_bias_z" default="0.001" 
+    <arg name="initial_gyro_bias_z" default="1.0317620125021342e-02" 
          doc="Initial gyroscope bias Z component (rad/s)" />
     
     <!-- ============================== OPTIMIZATION PARAMETERS ============================== -->
