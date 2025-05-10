@@ -41,7 +41,9 @@
                 Eigen::Vector3d Baj(parameters[5][0], parameters[5][1], parameters[5][2]);
                 Eigen::Vector3d Bgj(parameters[5][3], parameters[5][4], parameters[5][5]);
 
-                Eigen::Matrix<double, 15, 1> residual = preint->evaluate(
+                Eigen::Map<Eigen::Matrix<double, 15, 1>> residual(residuals);
+
+                residual = preint->evaluate(
                     Pi, Qi, Vi, Bai, Bgi,
                     Pj, Qj, Vj, Baj, Bgj
                 );
@@ -50,23 +52,18 @@
                 // sqrt_info = sqrt_info * 1e-2;
                 residual = sqrt_info * residual;  
                 // ROS_INFO_STREAM("sqrt_info * residual: " << residual.transpose());           
-                Eigen::Map<Eigen::Matrix<double, 15, 1>> residuals_map(residuals); 
-                residuals_map = residual;
 
                 if (jacobians) {
                     Eigen::Vector3d g = preint->getGravity();
                     double dt = preint->get_sum_dt(); // Get delta_t from preint object
-                    // Eigen::Matrix3d Ri = Qi.toRotationMatrix();
-                    // Eigen::Matrix3d Rj = Qj.toRotationMatrix(); // Needed for some Jacobians
-                    // Eigen::Matrix3d RiT = Ri.transpose();
+                    // ROS_INFO("DT: %f", dt);
+                    Eigen::MatrixXd J = preint->getJacobian(); // Get the Jacobian matrix
 
-                    const Eigen::MatrixXd& J = preint->getJacobian(); // Get the Jacobian matrix
-
-                    const Eigen::Matrix3d& J_alpha_ba = preint->getJacobianDpDba(); // Use getter
-                    const Eigen::Matrix3d& J_alpha_bg = preint->getJacobianDpDbg(); // Use getter
-                    const Eigen::Matrix3d& J_beta_ba = preint->getJacobianDvDba();   // Use getter
-                    const Eigen::Matrix3d& J_beta_bg = preint->getJacobianDvDbg();   // Use getter
-                    const Eigen::Matrix3d& J_gamma_bg = preint->getJacobianDqDbg(); // Use getter
+                    Eigen::Matrix3d J_alpha_ba = preint->getJacobianDpDba(); // Use getter
+                    Eigen::Matrix3d J_alpha_bg = preint->getJacobianDpDbg(); // Use getter
+                    Eigen::Matrix3d J_beta_ba = preint->getJacobianDvDba();   // Use getter
+                    Eigen::Matrix3d J_beta_bg = preint->getJacobianDvDbg();   // Use getter
+                    Eigen::Matrix3d J_gamma_bg = preint->getJacobianDqDbg(); // Use getter
 
                     // check the magnitude or preintegration jacobian coefficients
                     if(J.maxCoeff() > 1e8 || J.minCoeff() < -1e8){
@@ -81,8 +78,12 @@
                         // d(res)/d(Pi) - Position Part (Rows 0-2, Cols 0-2)
                         J0.block<3, 3>(O_P, O_P) = -Qi.inverse().toRotationMatrix();;
                         J0.block<3, 3>(O_P, O_R) = Utility::skewSymmetric(Qi.inverse()*(0.5 * g * dt * dt + Pj - Pi - Vi * dt ));
-                        Eigen::Quaterniond corrected_delta_q = preint->getDeltaQ() * Utility::deltaQ(J_gamma_bg * (Bgj - preint->getBg()));
+                        #if 0
+                        J0.block<3, 3>(O_R, O_R) = -(Qi.inverse() * Qi).toRotationMatrix();
+                        #else
+                        Eigen::Quaterniond corrected_delta_q = preint->getDeltaQ() * Utility::deltaQ(J_gamma_bg * (Bgi - preint->getBg()));
                         J0.block<3, 3>(O_R, O_R) = - (Utility::Qleft(Qj.inverse() * Qi) * Utility::Qright(corrected_delta_q)).bottomRightCorner<3, 3>();
+                        #endif
                         J0.block<3, 3>(O_V, O_R) = Utility::skewSymmetric(Qi.inverse() * (g * dt + Vj - Vi));
 
                         J0 = sqrt_info * J0;
@@ -107,8 +108,11 @@
 
                         J2.block<3, 3>(O_P, O_BA - O_BA) = -J_alpha_ba;
                         J2.block<3 ,3>(O_P, O_BG - O_BA) = -J_alpha_bg;
-
+                        #if 0
+                        J2.block<3, 3>(O_R, O_BA - O_BA) = -J_gamma_bg;
+                        #else
                         J2.block<3 ,3>(O_R, O_BG - O_BA) = -Utility::Qleft(Qj.inverse() * Qi * preint->getDeltaQ()).bottomRightCorner<3, 3>() * J_gamma_bg;
+                        #endif
                         
                         J2.block<3, 3>(O_V, O_BA - O_BA) = -J_beta_ba;
                         J2.block<3, 3>(O_V, O_BG - O_BA) = -J_beta_bg;
@@ -127,8 +131,12 @@
 
                         J3.block<3, 3>(O_P, O_P) = Qi.inverse().toRotationMatrix();
 
-                        Eigen::Quaterniond corrected_delta_q = preint->getDeltaQ() * Utility::deltaQ(J_gamma_bg * (Bgj - preint->getBg()));
+                        #if 0
+                        J3.block<3, 3>(O_R, O_R) = Eigen::Matrix3d::Identity();
+                        #else
+                        Eigen::Quaterniond corrected_delta_q = preint->getDeltaQ() * Utility::deltaQ(J_gamma_bg * (Bgi - preint->getBg()));
                         J3.block<3, 3>(O_R, O_R) = Utility::Qleft(corrected_delta_q.inverse() * Qi.inverse() * Qj).bottomRightCorner<3, 3>();
+                        #endif
 
                         J3 = sqrt_info * J3;
                     

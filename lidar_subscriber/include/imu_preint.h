@@ -16,15 +16,6 @@ Date: 2025-04-29
 #include <vector>
 #include "utility.h"
 
-static Eigen::Quaterniond deltaQ(const Eigen::Vector3d &theta)
-{
-    Eigen::Quaterniond dq;
-    Eigen::Vector3d half_theta = 0.5 * theta;
-    dq.w() = 1.0;
-    dq.vec() = half_theta;
-    return dq.normalized();
-}
-
 enum StateOrder {
     O_P = 0,
     O_R = 3,
@@ -56,8 +47,8 @@ public:
 
         sum_dt = 0.0;
         jacobian.setIdentity();
-        covariance.setIdentity();
-        covariance = 1e-3 * covariance;
+        covariance.setZero();
+        // covariance = 1e-3 * covariance;
 
         // set default gravity  
         set_gravity(9.785);
@@ -68,6 +59,11 @@ public:
     }
 
     bool set_noise(const double ACC_N, const double GYR_N, const double ACC_W, const double GYR_W){
+        acc_noise_sigma_ = ACC_N;
+        gyro_noise_sigma_ = GYR_N;
+        acc_bias_walk_sigma_continuous_ = ACC_W;
+        gyro_bias_walk_sigma_continuous_ = GYR_W;
+
         noise = Eigen::Matrix<double, 18, 18>::Zero();
         noise.block<3, 3>(0, 0) =  (ACC_N * ACC_N) * Eigen::Matrix3d::Identity();
         noise.block<3, 3>(3, 3) =  (GYR_N * GYR_N) * Eigen::Matrix3d::Identity();
@@ -89,7 +85,7 @@ public:
         // if this is the first IMU data, return directly to avoid integration
         if (stamp_buf.size() <= 1)
         {
-            ROS_INFO("First IMU data, no integration needed");
+            // ROS_WARN("First IMU data, no integration needed");
             return true;
         }
         // else, perform the integration in real time
@@ -118,26 +114,25 @@ public:
     bool midpoint_integrate(double dt,
                             const Eigen::Vector3d &raw_acc1, const Eigen::Vector3d &raw_acc2,
                             const Eigen::Vector3d &raw_gyro1, const Eigen::Vector3d &raw_gyro2,
-                            const Eigen::Vector3d &alpha, const Eigen::Vector3d &beta, const Eigen::Quaterniond &gamma,
+                            const Eigen::Vector3d &_alpha, const Eigen::Vector3d &_beta, const Eigen::Quaterniond &_gamma,
                             Eigen ::Vector3d &alpha_new, Eigen::Vector3d &beta_new, Eigen::Quaterniond &gamma_new, bool update_jacobian){
         // calculate the midpoint gamma first
         Eigen::Vector3d gyro_avg = 0.5 * (raw_gyro1 + raw_gyro2) - bg;
 
         // calculate the new gamma
-        gamma_new = gamma * Eigen::Quaterniond(1, 0.5* gyro_avg(0) * dt, 0.5* gyro_avg(1) * dt, 0.5* gyro_avg(2) * dt);
+        gamma_new = _gamma * Eigen::Quaterniond(1, 0.5* gyro_avg(0) * dt, 0.5* gyro_avg(1) * dt, 0.5* gyro_avg(2) * dt);
+        gamma_new = gamma_new.normalized();
 
         //translate the acceleration to the world frame
-        Eigen::Vector3d acc1 = gamma * (raw_acc1 - ba);
+        Eigen::Vector3d acc1 = _gamma * (raw_acc1 - ba);
         Eigen::Vector3d acc2 = gamma_new * (raw_acc2 - ba);
         Eigen::Vector3d acc_avg = 0.5 * (acc1 + acc2);
 
         // calculate the new beta
-        beta_new = beta + acc_avg * dt;
+        beta_new = _beta + acc_avg * dt;
 
         // calculate the new alpha
-        alpha_new = alpha + beta * dt + 0.5 * acc_avg * dt * dt;     
-
-        gamma_new.normalize();
+        alpha_new = _alpha + _beta * dt + 0.5 * acc_avg * dt * dt;     
         
         // update the jacobian and covariance if requested
         if(update_jacobian){
@@ -160,26 +155,26 @@ public:
 
             Eigen::MatrixXd F = Eigen::Matrix<double, 15, 15>::Zero();
             F.block<3, 3>(0, 0) = Eigen::Matrix3d::Identity();
-            F.block<3, 3>(0, 3) = -0.25 * gamma.toRotationMatrix() * R_a0x * dt * dt + 
+            F.block<3, 3>(0, 3) = -0.25 * _gamma.toRotationMatrix() * R_a0x * dt * dt + 
                                   -0.25 * gamma_new.toRotationMatrix() * R_a1x * (Eigen::Matrix3d::Identity() - R_w_x * dt) * dt * dt;
             F.block<3, 3>(0, 6) = Eigen::Matrix3d::Identity() * dt;
-            F.block<3, 3>(0, 9) = -0.25 * (gamma.toRotationMatrix() + gamma_new.toRotationMatrix()) * dt * dt;
+            F.block<3, 3>(0, 9) = -0.25 * (_gamma.toRotationMatrix() + gamma_new.toRotationMatrix()) * dt * dt;
             F.block<3, 3>(0, 12)= -0.25 * gamma_new.toRotationMatrix() * R_a1x * dt * dt * - dt;
 
             F.block<3, 3>(3, 3) = Eigen::Matrix3d::Identity() - R_w_x * dt;
             F.block<3, 3>(3, 12)= -1.0 * Eigen::Matrix3d::Identity() * dt;
 
-            F.block<3, 3>(6, 3) = -0.5 * gamma.toRotationMatrix() * R_a0x * dt + 
+            F.block<3, 3>(6, 3) = -0.5 * _gamma.toRotationMatrix() * R_a0x * dt + 
                                   -0.5 * gamma_new.toRotationMatrix() * R_a1x * (Eigen::Matrix3d::Identity() - R_w_x * dt) * dt;
             F.block<3, 3>(6, 6) = Eigen::Matrix3d::Identity();
-            F.block<3, 3>(6, 9) = -0.5 * (gamma.toRotationMatrix() + gamma_new.toRotationMatrix()) * dt;
+            F.block<3, 3>(6, 9) = -0.5 * (_gamma.toRotationMatrix() + gamma_new.toRotationMatrix()) * dt;
             F.block<3, 3>(6, 12)= -0.5 * gamma_new.toRotationMatrix() * R_a1x * dt * - dt;
 
             F.block<3, 3>(9, 9) = Eigen::Matrix3d::Identity();
             F.block<3, 3>(12,12)= Eigen::Matrix3d::Identity();
 
             Eigen::MatrixXd V = Eigen::Matrix<double, 15, 18>::Zero();
-            V.block<3, 3>(0, 0) = 0.25 * gamma.toRotationMatrix() * dt * dt;
+            V.block<3, 3>(0, 0) = 0.25 * _gamma.toRotationMatrix() * dt * dt;
             V.block<3, 3>(0, 3) = 0.25 * -gamma_new.toRotationMatrix() * R_a1x * dt * dt * 0.5 * dt;
             V.block<3, 3>(0, 6) = 0.25 * gamma_new.toRotationMatrix() * dt * dt;
             V.block<3, 3>(0, 9) = V.block<3, 3>(0, 3);
@@ -187,7 +182,7 @@ public:
             V.block<3, 3>(3, 3) = 0.5 * Eigen::Matrix3d::Identity() * dt;
             V.block<3, 3>(3, 9) = 0.5 * Eigen::Matrix3d::Identity() * dt;
 
-            V.block<3, 3>(6, 0) = 0.5 * gamma.toRotationMatrix() * dt;
+            V.block<3, 3>(6, 0) = 0.5 * _gamma.toRotationMatrix() * dt;
             V.block<3, 3>(6, 3) = 0.5 * -gamma_new.toRotationMatrix() * R_a1x * dt * 0.5 * dt;
             V.block<3, 3>(6, 6) = 0.5 * gamma_new.toRotationMatrix() * dt;
             V.block<3, 3>(6, 9) = V.block<3, 3>(6, 3);
@@ -208,6 +203,12 @@ public:
         if (dt <= 0.0)
         {
             ROS_INFO("imu preintegration error! dt <= 0.0");
+            return false;
+        }
+
+        if(dt < 1e-9)
+        {
+            ROS_WARN("IMU preintegration error! dt is too small");
             return false;
         }
 
@@ -281,6 +282,7 @@ public:
         Eigen::Vector3d dbg = Bgi - bg;
 
         Eigen::Quaterniond corrected_delta_q = gamma * Utility::deltaQ(dq_dbg * dbg);
+        corrected_delta_q.normalize();
         Eigen::Vector3d corrected_delta_v = beta + dv_dba * dba + dv_dbg * dbg;
         Eigen::Vector3d corrected_delta_p = alpha + dp_dba * dba + dp_dbg * dbg;
 
@@ -328,6 +330,8 @@ public:
         return sum_dt;
     }
 
+    double getSumDt() const { return sum_dt; }
+
     Eigen::Matrix3d getJacobianDpDba() const { return jacobian.block<3, 3>(O_P, O_BA); }
     Eigen::Matrix3d getJacobianDpDbg() const { return jacobian.block<3, 3>(O_P, O_BG); }
     Eigen::Matrix3d getJacobianDqDbg() const { return jacobian.block<3, 3>(O_R, O_BG); }
@@ -355,6 +359,49 @@ public:
 
     Eigen::MatrixXd getJacobian() const { return jacobian; }
 
+    double getAccNoiseSigma() const {
+        // Return the value corresponding to ACC_N set in set_noise
+        // This requires storing ACC_N, GYR_N, ACC_W, GYR_W as member variables
+        // or retrieving them from the 'noise_discrete_sigma' matrix if stored there.
+        // Example assuming stored members: return acc_noise_sigma_;
+        // Example retrieving from matrix (assuming 6x6 noise_discrete_sigma):
+        return acc_noise_sigma_;
+        // if (noise_discrete_sigma.rows() >= 3) return sqrt(noise_discrete_sigma(0,0)); else return 0.1; // Default guess
+   }
+   double getGyroNoiseSigma() const {
+        // Example: 
+        return gyro_noise_sigma_;
+        //  if (noise_discrete_sigma.rows() >= 6) return sqrt(noise_discrete_sigma(3,3)); else return 0.01; // Default guess
+   }
+   double getAccBiasWalkSigma() const {
+        // Example: return acc_bias_walk_sigma_;
+        // This might need to be inferred if only discrete noise variance is stored.
+        // If ACC_W was stored, return it. If not, this is problematic.
+        // Let's assume ACC_W was stored as member:
+        return acc_bias_walk_sigma_continuous_; // Assuming ACC_W stored as member
+        // return 0.001; // Placeholder default
+   }
+   double getGyroBiasWalkSigma() const {
+        // Example: return gyro_bias_walk_sigma_;
+        return gyro_bias_walk_sigma_continuous_; // Assuming GYR_W stored as member
+        // return 0.0001; // Placeholder default
+   }
+
+   // Modified getter to return only the 9x9 part for measurements [dp, dv, dtheta]
+   Eigen::Matrix<double, 9, 9> getPreintegrationMeasurementCovariance() const {
+    if (covariance.rows() >= 9 && covariance.cols() >= 9) {
+        // Return the top-left 9x9 block
+        return covariance.block<9, 9>(0, 0);
+    } else {
+        ROS_ERROR("Stored covariance matrix size (%ldx%ld) is smaller than 9x9!", covariance.rows(), covariance.cols());
+        // Return a default high-variance identity matrix as fallback
+        Eigen::Matrix<double, 9, 9> default_cov;
+        default_cov.setIdentity();
+        default_cov *= 1e6; // High variance indicates problem
+        return default_cov;
+    }
+}
+
 private:
 
     double sum_dt;
@@ -381,5 +428,10 @@ private:
 
     Eigen::Matrix<double, 15, 15> jacobian, covariance;
     Eigen::Matrix<double, 18, 18> noise;
+
+    double acc_noise_sigma_ = 0.0;
+    double gyro_noise_sigma_ = 0.0;
+    double acc_bias_walk_sigma_continuous_ = 0.0; // Store the continuous time random walk sigma
+    double gyro_bias_walk_sigma_continuous_ = 0.0;// Store the continuous time random walk sigma
 
 };
