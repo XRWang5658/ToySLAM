@@ -315,7 +315,7 @@ private:
             run_number_str = it->second;
         } else {
              // Warn if the crucial run number is missing for a dynamic entry
-             std::cerr << "Warning: 'Optimization Run' metadata missing for this log entry." << std::endl;
+            //  std::cerr << "Warning: 'Optimization Run' metadata missing for this log entry." << std::endl;
         }
 
         // Get current timestamp for this specific log entry
