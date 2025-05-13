@@ -1,12 +1,12 @@
 <launch>
 
-     <arg name="results_log_path" default="/root/toyslam_ws/src/data/results_log.txt" 
+     <arg name="results_log_path" default="/home/xiangru/code/toyslam_ws/src/data/results.txt" 
          doc="Path for the optimization results log file (parameters). Empty generates default name." />
-     <arg name="metrics_log_path" default="/root/toyslam_ws/src/data/metrics_log.txt" 
+     <arg name="metrics_log_path" default="/home/xiangru/code/toyslam_ws/src/data/metrics.txt" 
          doc="Path for the optimization metrics log file (summary/computation). Empty generates default name." />
 
      <!--Most Critical: Gravity Acc-->
-     <arg name="gravity_magnitude" default="9.81" 
+     <arg name="gravity_magnitude" default="9.785" 
          doc="Gravity acceleration in m/s². Default is 9.785 m/s². for Hong Kong, it can vary depends on the latitude" />
     <!-- ============================== SENSOR FUSION MODE ============================== -->
     <!-- Determines whether to use GPS or UWB for position measurements -->
@@ -56,17 +56,17 @@
     <!-- These values model the uncertainty in sensor measurements -->
     
     <!-- IMU noise parameters - affect integration accuracy and bias estimation -->
-    <arg name="imu_acc_noise" default="0.2" 
+    <arg name="imu_acc_noise" default="0.01" 
          doc="Accelerometer white noise (m/s²). Higher values trust accelerometer less." />
-    <arg name="imu_gyro_noise" default="0.03" 
+    <arg name="imu_gyro_noise" default="0.01" 
          doc="Gyroscope white noise (rad/s). Higher values trust gyroscope less." />
-    <arg name="imu_acc_bias_noise" default="0.001"
+    <arg name="imu_acc_bias_noise" default="0.0001"
          doc="Accelerometer bias noise (m/s²). Higher values allow more IMU influence." />
-    <arg name="imu_gyro_bias_noise" default="0.0001"
+    <arg name="imu_gyro_bias_noise" default="0.00001"
          doc="Gyroscope bias noise (rad/s). Higher values allow more IMU influence." />
     
     <!-- GPS noise parameters - affect how tightly estimates adhere to GPS -->
-    <arg name="gps_position_noise" default="5" 
+    <arg name="gps_position_noise" default="10" 
          doc="GPS position measurement noise (m). Higher values allow more IMU influence." />
     <arg name="gps_velocity_noise" default="1" 
          doc="GPS velocity measurement noise (m/s). Higher values allow more IMU influence." />
@@ -79,17 +79,17 @@
     
     <!-- ============================== INITIAL BIAS VALUES ============================== -->
     <!-- Initial values for IMU biases - helps convergence and provides better initial integration -->
-    <arg name="initial_acc_bias_x" default="0.05" 
+    <arg name="initial_acc_bias_x" default="0" 
          doc="Initial accelerometer bias X component (m/s²)" />
-    <arg name="initial_acc_bias_y" default="-0.05" 
+    <arg name="initial_acc_bias_y" default="0" 
          doc="Initial accelerometer bias Y component (m/s²)" />
-    <arg name="initial_acc_bias_z" default="0.05" 
+    <arg name="initial_acc_bias_z" default="0" 
          doc="Initial accelerometer bias Z component (m/s²)" />
-    <arg name="initial_gyro_bias_x" default="0.001" 
+    <arg name="initial_gyro_bias_x" default="0.000" 
          doc="Initial gyroscope bias X component (rad/s)" />
-    <arg name="initial_gyro_bias_y" default="-0.001" 
+    <arg name="initial_gyro_bias_y" default="-0.000" 
          doc="Initial gyroscope bias Y component (rad/s)" />
-    <arg name="initial_gyro_bias_z" default="0.001" 
+    <arg name="initial_gyro_bias_z" default="0.000" 
          doc="Initial gyroscope bias Z component (rad/s)" />
     
     <!-- ============================== OPTIMIZATION PARAMETERS ============================== -->
@@ -98,7 +98,7 @@
          doc="Number of keyframes to maintain in sliding window optimization. Larger windows provide better accuracy but slower performance." />
     <arg name="optimization_frequency" default="1" 
          doc="How often to run the optimizer (Hz). Higher values give more frequent updates but increase CPU usage." />
-    <arg name="max_iterations" default="10" 
+    <arg name="max_iterations" default="20" 
          doc="Maximum iterations for Ceres solver. Higher values may improve accuracy but increase computation time." />
     
     <!-- ============================== FEATURE CONFIGURATION ============================== -->

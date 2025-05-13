@@ -194,3 +194,12 @@ target_link_libraries(gnssSpp ${catkin_LIBRARIES} ${CERES_LIBRARIES}
   OpenMP::OpenMP_CXX
   # absl::strings
 )
+
+add_executable(test_imu_preint src/test_imu_preint.cpp)
+target_link_libraries(test_imu_preint ${catkin_LIBRARIES} ${CERES_LIBRARIES}
+  ${catkin_LIBRARIES}
+  ${PCL_LIBRARIES}
+  # pclomp
+  OpenMP::OpenMP_CXX
+  # absl::strings
+)
