@@ -5508,8 +5508,10 @@ private:
                     if (found_gps && min_time_diff < 1.0) {  // Within 1 second
                         double gps_vel_norm = closest_gps.velocity.norm();
                         double vel_diff = (current_state_.velocity - closest_gps.velocity).norm();
-                        
-                        // ROS_INFO("GPS velocity comparison: GPS [%.2f, %.2f, %.2f] m/s (%.1f km/h), diff: %.2f m/s (%.1f km/h)",
+                        ROS_INFO("velocity comparison: current_state_ [%.2f, %.2f, %.2f] m/s , closest_gps: [%.2f, %.2f, %.2f] m/s",
+                                 current_state_.velocity.x(), current_state_.velocity.y(), current_state_.velocity.z(),
+                                 closest_gps.velocity.x(), closest_gps.velocity.y(), closest_gps.velocity.z());
+                        //ROS_INFO("GPS velocity comparison: GPS [%.2f, %.2f, %.2f] m/s (%.1f km/h), diff: %.2f m/s (%.1f km/h)",
                         //         closest_gps.velocity.x(), closest_gps.velocity.y(), closest_gps.velocity.z(),
                         //         gps_vel_norm * 3.6, vel_diff, vel_diff * 3.6);
                     }

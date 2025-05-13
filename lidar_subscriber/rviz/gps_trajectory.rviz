@@ -68,7 +68,6 @@ Visualization Manager:
         Z: 0
       Pose Color: 255; 85; 255
       Pose Style: None
-      Queue Size: 10
       Radius: 0.029999999329447746
       Shaft Diameter: 0.10000000149011612
       Shaft Length: 0.10000000149011612
@@ -92,7 +91,6 @@ Visualization Manager:
         Z: 0
       Pose Color: 255; 85; 255
       Pose Style: None
-      Queue Size: 10
       Radius: 0.029999999329447746
       Shaft Diameter: 0.10000000149011612
       Shaft Length: 0.10000000149011612
@@ -119,14 +117,7 @@ Visualization Manager:
       Marker Topic: /errors/velocity
       Name: Velocity Error
       Namespaces:
-        velocity: true
-        velocity_error_text: true
-        velocity_est_east: true
-        velocity_est_north: true
-        velocity_est_up: true
-        velocity_gps_east: true
-        velocity_gps_north: true
-        velocity_gps_up: true
+        {}
       Queue Size: 100
       Value: true
     - Class: rviz/TF
@@ -136,7 +127,6 @@ Visualization Manager:
       Frame Timeout: 15
       Frames:
         All Enabled: true
-      Marker Alpha: 1
       Marker Scale: 10
       Name: TF
       Show Arrows: true
@@ -146,14 +136,12 @@ Visualization Manager:
         {}
       Update Interval: 0
       Value: false
-    - Alpha: 1
-      Class: rviz/Axes
+    - Class: rviz/Axes
       Enabled: true
       Length: 1
       Name: Axes
       Radius: 0.10000000149011612
       Reference Frame: <Fixed Frame>
-      Show Trail: false
       Value: true
     - Angle Tolerance: 0.10000000149011612
       Class: rviz/Odometry
@@ -176,7 +164,6 @@ Visualization Manager:
       Keep: 1
       Name: Current Pose
       Position Tolerance: 0.10000000149011612
-      Queue Size: 10
       Shape:
         Alpha: 1
         Axes Length: 1
