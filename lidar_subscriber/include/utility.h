@@ -16,14 +16,23 @@ class Utility
     static Eigen::Quaternion<typename Derived::Scalar> deltaQ(const Eigen::MatrixBase<Derived> &theta)
     {
         typedef typename Derived::Scalar Scalar_t;
-
+        Scalar_t theta_norm = theta.norm();
         Eigen::Quaternion<Scalar_t> dq;
-        Eigen::Matrix<Scalar_t, 3, 1> half_theta = theta;
-        half_theta /= static_cast<Scalar_t>(2.0);
-        dq.w() = static_cast<Scalar_t>(1.0);
-        dq.x() = half_theta.x();
-        dq.y() = half_theta.y();
-        dq.z() = half_theta.z();
+
+        if (theta_norm < static_cast<Scalar_t>(1e-10)) {
+            // 角度接近零，返回单位四元数（或保留一阶近似并归一化，但单位阵更简单）
+            dq.coeffs().setZero(); // coeffs 是 [x, y, z, w]
+            dq.w() = static_cast<Scalar_t>(1.0);
+        } else {
+            Eigen::Matrix<Scalar_t, 3, 1> axis = theta / theta_norm;
+            Scalar_t half_angle = theta_norm / static_cast<Scalar_t>(2.0);
+            Scalar_t sin_half_angle = sin(half_angle);
+            dq.w() = cos(half_angle);
+            dq.x() = sin_half_angle * axis.x();
+            dq.y() = sin_half_angle * axis.y();
+            dq.z() = sin_half_angle * axis.z();
+            dq.normalize(); // 理论上已经是单位四元数，可选择性加归一化以防数值误差
+        }
         return dq;
     }
 

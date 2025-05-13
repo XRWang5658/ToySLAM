@@ -29,7 +29,7 @@
     
     <!-- CRITICAL: When true, GPS velocity is used to initialize velocity at each keyframe -->
     <!-- This is essential for stable velocity estimation -->
-    <arg name="use_gps_velocity" default="true" 
+    <arg name="use_gps_velocity" default="false" 
          doc="Use GPS velocity to initialize each keyframe. If enable_velocity_constraint is false, GPS velocity is only used for initialization, not as a constraint." />
 
     <!-- ============================== TOPIC NAMES ============================== -->
@@ -66,9 +66,9 @@
          doc="Gyroscope bias noise (rad/s). Higher values allow more IMU influence." />
     
     <!-- GPS noise parameters - affect how tightly estimates adhere to GPS -->
-    <arg name="gps_position_noise" default="10" 
+    <arg name="gps_position_noise" default="2" 
          doc="GPS position measurement noise (m). Higher values allow more IMU influence." />
-    <arg name="gps_velocity_noise" default="1" 
+    <arg name="gps_velocity_noise" default="0.1" 
          doc="GPS velocity measurement noise (m/s). Higher values allow more IMU influence." />
     <arg name="gps_orientation_noise" default="0.1" 
          doc="GPS orientation measurement noise (rad). Higher values trust GPS orientation less." />

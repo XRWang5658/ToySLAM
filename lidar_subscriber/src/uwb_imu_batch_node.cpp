@@ -35,14 +35,75 @@ GNSS_Tools m_GNSS_Tools;
 #include "../include/ceres_logger.h"
 #include "../include/utility.h"
 
+/**
+ * @brief Converts velocity from RFU (Right-Forward-Up) coordinate system to ENU (East-North-Up) coordinate system.
+ *
+ * @param v_rfu_eigen Velocity vector in RFU coordinate system (X: Right, Y: Forward, Z: Up).
+ * @param roll_deg Roll angle (rotation around the body's Forward axis), unit: degrees.
+ * @param pitch_deg Pitch angle (rotation around the body's Right axis), unit: degrees.
+ * @param yaw_deg_from_north_clockwise Yaw angle (clockwise positive from North, rotation around NED's Down axis), unit: degrees.
+ * @return Eigen::Vector3d Velocity vector in ENU coordinate system (X: East, Y: North, Z: Up).
+ */
+Eigen::Vector3d convertRfuToEnu(const Eigen::Vector3d& v_rfu_eigen,
+                                double roll_deg,
+                                double pitch_deg,
+                                double yaw_deg_from_north_clockwise) {
+    // 1. Convert angles from degrees to radians
+    double roll_rad = roll_deg * M_PI / 180.0;
+    double pitch_rad = pitch_deg * M_PI / 180.0;
+    double yaw_ned_rad = yaw_deg_from_north_clockwise * M_PI / 180.0;
+
+    // 2. RFU velocity components (v_rfu_eigen: X=Right, Y=Forward, Z=Up)
+    //    v_rfu_eigen(0) -> right
+    //    v_rfu_eigen(1) -> forward
+    //    v_rfu_eigen(2) -> up
+
+    // 3. Define transformation from RFU to standard aeronautical body coordinate system FRD (X: Forward, Y: Right, Z: Down)
+    Eigen::Vector3d v_frd;
+    v_frd(0) = v_rfu_eigen(1);  // Forward component of FRD is Forward component of RFU
+    v_frd(1) = v_rfu_eigen(0);  // Right component of FRD is Right component of RFU
+    v_frd(2) = -v_rfu_eigen(2); // Down component of FRD is negative Up component of RFU
+
+    // 4. Construct rotation matrix from FRD (body) to NED (North-East-Down)
+    //    Euler angle order: ZYX (Yaw, Pitch, Roll) applied intrinsically
+    //    Yaw: Rotation around Z_ned (Down) axis.
+    //    Pitch: Rotation around intermediate Y_axis (body's Right axis).
+    //    Roll: Rotation around final X_axis (body's Forward axis).
+
+    Eigen::AngleAxisd rollAngle(roll_rad, Eigen::Vector3d::UnitX());    // Rotation around body X-axis (Forward)
+    Eigen::AngleAxisd pitchAngle(pitch_rad, Eigen::Vector3d::UnitY());  // Rotation around body Y-axis (Right)
+    Eigen::AngleAxisd yawAngle(yaw_ned_rad, Eigen::Vector3d::UnitZ());  // Rotation around NED Z-axis (Down)
+
+    // Rotation matrix R_frd_to_ned = Rz(yaw) * Ry(pitch) * Rx(roll)
+    // This order means applying roll to the FRD system, then pitch to the rotated system, and finally yaw.
+    Eigen::Quaterniond combined_rotation_quat = yawAngle * pitchAngle * rollAngle;
+    Eigen::Matrix3d R_frd_to_ned = combined_rotation_quat.toRotationMatrix();
+
+    // 5. Convert FRD velocity to NED velocity
+    Eigen::Vector3d v_ned = R_frd_to_ned * v_frd;
+
+    // 6. Convert from NED (X:North, Y:East, Z:Down) to ENU (X:East, Y:North, Z:Up)
+    Eigen::Vector3d v_enu;
+    v_enu(0) = v_ned(1); // ENU East  = NED East component
+    v_enu(1) = v_ned(0); // ENU North = NED North component
+    v_enu(2) = -v_ned(2);// ENU Up    = -NED Down component
+
+    return v_enu;
+}
+
 // Custom parameterization for pose (position + quaternion)
 class PoseParameterization : public ceres::LocalParameterization {
 public:
     virtual ~PoseParameterization() {}
 
+    virtual int GlobalSize() const { return 7; }
+    virtual int LocalSize() const { return 6; }
+
     bool Plus(const double *x, const double *delta, double *x_plus_delta) const
     {
+        
         Eigen::Map<const Eigen::Vector3d> _p(x);
+        // ROS_INFO_STREAM("p: " << _p.transpose());
         Eigen::Map<const Eigen::Quaterniond> _q(x + 3);
 
         Eigen::Map<const Eigen::Vector3d> dp(delta);
@@ -66,6 +127,9 @@ public:
 
         return true;
     }
+};
+
+
     // Position is updated as-is, quaternion through quaternion multiplication
     // virtual bool Plus(const double* x, const double* delta, double* x_plus_delta) const {
     //     // Position update: simple addition
@@ -104,9 +168,7 @@ public:
         
     //     return true;
     // }
-    
-    virtual int GlobalSize() const { return 7; }
-    virtual int LocalSize() const { return 6; }
+
     
     // virtual bool ComputeJacobian(const double* x, double* jacobian) const {
     //     // Initialize to zero
@@ -143,7 +205,7 @@ public:
         
     //     return true;
     // }
-};
+// };
 
 // CRITICAL: Hard constraint on bias magnitude
 class BiasMagnitudeConstraint {
@@ -2661,12 +2723,11 @@ private:
 
             // TESTING: Add artificial noise to GPS position if in test mode
             if (true) {
-                double gps_noise_magnitude_ = 5.0;
+                double gps_noise_magnitude_ = 2.0;
                 // Only add noise to every nth message to create visible outliers
                 static int msg_counter = 0;
 
-                if(msg_counter % 5== 0){
-
+                if(msg_counter % 1== 0){
                 
                 // Generate random noise
                 double noise_x = ((double)rand() / RAND_MAX * 2.0 - 1.0) * gps_noise_magnitude_;
@@ -2678,31 +2739,38 @@ private:
                 enu_position.x() += noise_x;
                 enu_position.y() += noise_y;
                 enu_position.z() += noise_z;
+
+                msg_counter++;
                 
-                // Log the injected noise
-                ROS_INFO("Injected GPS noise: [%.2f, %.2f, %.2f] meters at t=%.3f", 
-                        noise_x, noise_y, noise_z, unix_timestamp);
+                // // Log the injected noise
+                // ROS_INFO("Injected GPS noise: [%.2f, %.2f, %.2f] meters at t=%.3f", 
+                //         noise_x, noise_y, noise_z, unix_timestamp);
                 }
+                
             }
             
             // Get velocity (convert from NED to ENU)
             // ENU: X=East, Y=North, Z=Up
-            Eigen::Vector3d enu_velocity(msg->east_velocity, msg->north_velocity, -msg->up_velocity);
+            // Eigen::Vector3d enu_velocity(msg->east_velocity, msg->north_velocity, -msg->up_velocity);
+            // CRITICAL::  the velocity for ROS bag,
+            Eigen::Vector3d enu_velocity;
 
-            // Debug velocity conversion
-            ROS_DEBUG("GPS velocity converted: NED [%.2f, %.2f, %.2f] -> ENU [%.2f, %.2f, %.2f], magnitude: %.2f m/s (%.1f km/h)",
-                    msg->north_velocity, msg->east_velocity, msg->up_velocity,
-                    enu_velocity.x(), enu_velocity.y(), enu_velocity.z(),
-                    enu_velocity.norm(), enu_velocity.norm() * 3.6);
+            // get the veolcity from novatel first: the enu is actually right-foward-up
+            Eigen::Vector3d body_velocity(
+                msg->east_velocity,
+                msg->north_velocity,
+                msg->up_velocity);
             
             // Get orientation with safety checks
             double roll_rad = msg->roll * M_PI / 180.0;
             double pitch_rad = msg->pitch * M_PI / 180.0;
             double azimuth_rad = msg->azimuth * M_PI / 180.0;
+
+            enu_velocity = convertRfuToEnu(body_velocity, msg->roll, msg->pitch, msg->azimuth);
             
             // Convert NED azimuth to ENU yaw
-            // double yaw_enu = M_PI/2.0 - azimuth_rad;
-            double yaw_enu = - azimuth_rad;  // NED to ENU conversion
+            double yaw_enu = M_PI/2.0 - azimuth_rad;
+            // double yaw_enu = - azimuth_rad;  // NED to ENU conversion
             
             // Create quaternion from euler angles
             Eigen::Quaterniond orientation = 
@@ -2844,17 +2912,17 @@ private:
                     // current_state_.orientation = q.normalized();
                 }
                 // Try to find IMU orientation if available
-                sensor_msgs::Imu closest_imu = findClosestImuMeasurement(gps.timestamp);
-                if (closest_imu.header.stamp.toSec() > 0 && 
-                    closest_imu.orientation_covariance[0] != -1) {
-                    current_state_.orientation = Eigen::Quaterniond(
-                        closest_imu.orientation.w,
-                        closest_imu.orientation.x,
-                        closest_imu.orientation.y,
-                        closest_imu.orientation.z
-                    ).normalized();
-                    ROS_INFO("Using IMU orientation for initialization");
-                }
+                // sensor_msgs::Imu closest_imu = findClosestImuMeasurement(gps.timestamp);
+                // if (closest_imu.header.stamp.toSec() > 0 && 
+                //     closest_imu.orientation_covariance[0] != -1) {
+                //     current_state_.orientation = Eigen::Quaterniond(
+                //         closest_imu.orientation.w,
+                //         closest_imu.orientation.x,
+                //         closest_imu.orientation.y,
+                //         closest_imu.orientation.z
+                //     ).normalized();
+                //     ROS_INFO("Using IMU orientation for initialization");
+                // }
             }
             
             // Use GPS velocity only if configured
@@ -2944,17 +3012,18 @@ private:
                 if (use_gps_orientation_as_initial_) {
                     new_state.orientation = gps.orientation.normalized();
                 } else {
-                    // Keep current orientation or try to use IMU
-                    sensor_msgs::Imu closest_imu = findClosestImuMeasurement(gps.timestamp);
-                    if (closest_imu.header.stamp.toSec() > 0 && 
-                        closest_imu.orientation_covariance[0] != -1) {
-                        new_state.orientation = Eigen::Quaterniond(
-                            closest_imu.orientation.w,
-                            closest_imu.orientation.x,
-                            closest_imu.orientation.y,
-                            closest_imu.orientation.z
-                        ).normalized();
-                    }
+                    // // Keep current orientation or try to use IMU
+                    // sensor_msgs::Imu closest_imu = findClosestImuMeasurement(gps.timestamp);
+                    // if (closest_imu.header.stamp.toSec() > 0 && 
+                    //     closest_imu.orientation_covariance[0] != -1) {
+                    //     new_state.orientation = Eigen::Quaterniond(
+                    //         closest_imu.orientation.w,
+                    //         closest_imu.orientation.x,
+                    //         closest_imu.orientation.y,
+                    //         closest_imu.orientation.z
+                    //     ).normalized();
+                    // }
+                    new_state.orientation = Eigen::Quaterniond::Identity();
                 }
                 
                 if (use_gps_velocity_) {
@@ -3013,19 +3082,26 @@ private:
             } else {
                 // use IMU orientation if not using GPS
                 // Keep current orientation or try to use IMU
+                // Eigen::Quaterniond imu_orientation;
                 // sensor_msgs::Imu closest_imu = findClosestImuMeasurement(gps.timestamp);
                 // if (closest_imu.header.stamp.toSec() > 0 && 
                 //     closest_imu.orientation_covariance[0] != -1) {
-                //         propagated_state_gps.orientation = Eigen::Quaterniond(
+                //         imu_orientation = Eigen::Quaterniond(
                 //         closest_imu.orientation.w,
                 //         closest_imu.orientation.x,
                 //         closest_imu.orientation.y,
                 //         closest_imu.orientation.z
                 //     ).normalized();
-                // } 
+                //     propagated_state_gps.orientation = imu_orientation;
+                // }
 
                 // use the last keyframe's orientation
                 propagated_state_gps.orientation = last_keyframe.orientation;
+
+                // // display the orientation from 2 sources
+                // ROS_INFO_STREAM("IMU orientation: " << imu_orientation.coeffs().transpose());
+                // ROS_INFO_STREAM("GPS orientation: " << gps.orientation.coeffs().transpose());
+                // ROS_INFO_STREAM("Last keyframe orientation: " << last_keyframe.orientation.coeffs().transpose());
 
             }
             
@@ -3129,7 +3205,7 @@ private:
         
         // Apply quaternion update
         if (omega_integrated.norm() > 1e-8) {
-            q = q * deltaQ(omega_integrated);
+            q = q * Utility::deltaQ(omega_integrated);
         }
         q.normalize();  // Ensure quaternion stays normalized
     }
@@ -4043,11 +4119,11 @@ private:
         // save the preint data to the map
         preintegration_map_test[std::make_pair(start_time, end_time)] = current_preint_test;
 
-        ROS_INFO("Current preint data:");
-        ROS_INFO("delta_p: %f, %f, %f", current_preint_test.getDeltaAlpha().x(), current_preint_test.getDeltaAlpha().y(), current_preint_test.getDeltaAlpha().z());
+        // ROS_INFO("Current preint data:");
+        // ROS_INFO("delta_p: %f, %f, %f", current_preint_test.getDeltaAlpha().x(), current_preint_test.getDeltaAlpha().y(), current_preint_test.getDeltaAlpha().z());
 
-        // print the preint data
-        ROS_INFO("Preintegration data saved for keyframes: [%.3f, %.3f]", start_time, end_time);
+        // // print the preint data
+        // ROS_INFO("Preintegration data saved for keyframes: [%.3f, %.3f]", start_time, end_time);
 
         // reset the current preint data to accept imu messages for next keyframe
         current_preint_test.reset();
@@ -5031,8 +5107,8 @@ private:
 
                 Eigen::Quaterniond q = state.orientation;
                 q.normalize();
-                // print out the quaternion
-                ROS_INFO("Quaternion of state %i: [%.2f, %.2f, %.2f, %.2f]", i, q.w(), q.x(), q.y(), q.z());
+                // // print out the quaternion
+                // ROS_INFO("Quaternion of state %i: [%.2f, %.2f, %.2f, %.2f]", i, q.w(), q.x(), q.y(), q.z());
                 
                 // Orientation (quaternion): w, x, y, z
                 var.pose[3] = q.x();
@@ -5066,8 +5142,8 @@ private:
             // Add pose parameterization
             for (size_t i = 0; i < state_window_.size(); ++i) {
                 problem.AddParameterBlock(variables[i].pose, 7, pose_parameterization);
-                // problem.AddParameterBlock(variables[i].velocity, 3);
-                // problem.AddParameterBlock(variables[i].bias, 6);
+                problem.AddParameterBlock(variables[i].velocity, 3);
+                problem.AddParameterBlock(variables[i].bias, 6);
             }
             
             // If bias estimation is disabled, set biases constant
@@ -5288,28 +5364,25 @@ private:
                                            variables[i].pose, variables[i].velocity, variables[i].bias,
                                            variables[i+1].pose, variables[i+1].velocity, variables[i+1].bias);
 
-                    ROS_INFO("Add IMU factor between keyframes [%.3f-%.3f]", start_time, end_time);
-                    ROS_INFO("IMU preintegration: dt=%.3f, dp=[%.3f,%.3f,%.3f], dv=[%.3f,%.3f,%.3f], dq=[%.3f,%.3f,%.3f,%.3f]",
-                            preint.get_sum_dt(), preint.getDeltaAlpha().x(), preint.getDeltaAlpha().y(), preint.getDeltaAlpha().z(),
-                            preint.getDeltaBeta().x(), preint.getDeltaBeta().y(), preint.getDeltaBeta().z(),
-                            preint.getDeltaGamma().w(), preint.getDeltaGamma().x(), preint.getDeltaGamma().y(), preint.getDeltaGamma().z());
-                    // ROS_INFO("IMU preintegration: dp=[%.3f,%.3f,%.3f], dv=[%.3f,%.3f,%.3f]",
-                    //         preint.alpha.x(), preint.alpha.y(), preint.alpha.z(),
-                    //         preint.beta.x(), preint.beta.y(), preint.beta.z());
-                    ROS_INFO("State positions: [%.2f, %.2f, %.2f] [%.2f, %.2f, %.2f]",
-                            variables[i].pose[0], variables[i].pose[1], variables[i].pose[2],
-                            variables[i+1].pose[0], variables[i+1].pose[1], variables[i+1].pose[2]);
-                    ROS_INFO("State velocities: [%.2f, %.2f, %.2f] [%.2f, %.2f, %.2f]",
-                            variables[i].velocity[0], variables[i].velocity[1], variables[i].velocity[2],
-                            variables[i+1].velocity[0], variables[i+1].velocity[1], variables[i+1].velocity[2]);
-                    ROS_INFO("State Orientation: [%.2f, %.2f, %.2f, %.2f] [%.2f, %.2f, %.2f, %.2f]",
-                            variables[i].pose[3], variables[i].pose[4], variables[i].pose[5], variables[i].pose[6],
-                            variables[i+1].pose[3], variables[i+1].pose[4], variables[i+1].pose[5], variables[i+1].pose[6]);
+                    // ROS_INFO("Add IMU factor between keyframes [%.3f-%.3f]", start_time, end_time);
+                    // ROS_INFO("IMU preintegration: dt=%.3f, dp=[%.3f,%.3f,%.3f], dv=[%.3f,%.3f,%.3f], dq=[%.3f,%.3f,%.3f,%.3f]",
+                    //         preint.get_sum_dt(), preint.getDeltaAlpha().x(), preint.getDeltaAlpha().y(), preint.getDeltaAlpha().z(),
+                    //         preint.getDeltaBeta().x(), preint.getDeltaBeta().y(), preint.getDeltaBeta().z(),
+                    //         preint.getDeltaGamma().w(), preint.getDeltaGamma().x(), preint.getDeltaGamma().y(), preint.getDeltaGamma().z());
+                    // ROS_INFO("State positions: [%.2f, %.2f, %.2f] [%.2f, %.2f, %.2f]",
+                    //         variables[i].pose[0], variables[i].pose[1], variables[i].pose[2],
+                    //         variables[i+1].pose[0], variables[i+1].pose[1], variables[i+1].pose[2]);
+                    // ROS_INFO("State velocities: [%.2f, %.2f, %.2f] [%.2f, %.2f, %.2f]",
+                    //         variables[i].velocity[0], variables[i].velocity[1], variables[i].velocity[2],
+                    //         variables[i+1].velocity[0], variables[i+1].velocity[1], variables[i+1].velocity[2]);
+                    // ROS_INFO("State Orientation: [%.2f, %.2f, %.2f, %.2f] [%.2f, %.2f, %.2f, %.2f]",
+                    //         variables[i].pose[3], variables[i].pose[4], variables[i].pose[5], variables[i].pose[6],
+                    //         variables[i+1].pose[3], variables[i+1].pose[4], variables[i+1].pose[5], variables[i+1].pose[6]);
 
                     // 计算初始 residual
-                    // double residuals[15]; 
-                    // double* parameters[6] = {variables[i].pose, variables[i].velocity, variables[i].bias,
-                    //                         variables[i+1].pose, variables[i+1].velocity, variables[i+1].bias};
+                    double residuals[15]; 
+                    double* parameters[6] = {variables[i].pose, variables[i].velocity, variables[i].bias,
+                                            variables[i+1].pose, variables[i+1].velocity, variables[i+1].bias};
                     // imu_factor_->Evaluate(parameters, residuals, nullptr);
                     // // 打印所有初始的residual
                     // for (size_t j = 0; j < 15; ++j) {
@@ -5349,9 +5422,9 @@ private:
             options.minimizer_progress_to_stdout = true;
             options.num_threads = 8;
 
-            // //compare with auto computed jacobian
-            options.check_gradients = true;
-            options.gradient_check_relative_precision = 1e-2;
+            // // //compare with auto computed jacobian
+            // options.check_gradients = true;
+            // options.gradient_check_relative_precision = 1e-2;
             
             // Solve the optimization problem
             ceres::Solver::Summary summary;
@@ -5371,11 +5444,11 @@ private:
 
             
 
-            ceres::Problem::EvaluateOptions eval_options;
-            std::vector<double> residuals;
+            // ceres::Problem::EvaluateOptions eval_options;
+            // std::vector<double> residuals;
 
-            // Evaluate residuals after optimization
-            problem.Evaluate(eval_options, nullptr, &residuals, nullptr, nullptr);
+            // // Evaluate residuals after optimization
+            // problem.Evaluate(eval_options, nullptr, &residuals, nullptr, nullptr);
 
             // // Print residuals
             // ROS_INFO("Residuals after optimization:");
@@ -5384,13 +5457,6 @@ private:
             // }
 
             // std::cout << summary.FullReport() << std::endl;
-
-            for (size_t i = 0; i < state_window_.size() - 1; ++i) {
-                std::pair<double, double> key(state_window_[i].timestamp, state_window_[i+1].timestamp);
-                if (preintegration_map_test.find(key) == preintegration_map_test.end()) {
-                    ROS_WARN("Missing preintegration between states %zu and %zu", i, i+1);
-                }
-            }
 
             // // output the state window after optimization
             // for (size_t i = 0; i < variables.size(); ++i) {

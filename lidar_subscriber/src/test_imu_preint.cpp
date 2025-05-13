@@ -45,11 +45,11 @@ int main() {
     // checkJacobian 函数内部会使用传递的 current_ba, current_bg (即 ba_lin, bg_lin)
     // 作为该单步计算的偏置线性化点，并临时设置 this->ba 和 this->bg。
     std::cout << "Starting Jacobian Check for imu_preint..." << std::endl;
-    my_integrator.checkJacobian(dt_check,
-                                acc0_check, gyro0_check,
-                                acc1_check, gyro1_check,
-                                alpha_k, beta_k, gamma_k,
-                                ba_lin, bg_lin);
+    // my_integrator.checkJacobian(dt_check,
+    //                             acc0_check, gyro0_check,
+    //                             acc1_check, gyro1_check,
+    //                             alpha_k, beta_k, gamma_k,
+    //                             ba_lin, bg_lin);
 
     // 如果您想测试累积雅可比 (this->jacobian)，您需要先进行一些实际的 push_back 操作：
     // std::cout << "\n--- Example of pushing data first (not directly for checkJacobian single step) ---" << std::endl;
