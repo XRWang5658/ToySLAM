@@ -22,6 +22,7 @@
 #include <visualization_msgs/MarkerArray.h>
 #include <iomanip>  // For std::setprecision
 #include <sstream>  // For std::stringstream
+#include <fstream>  // For std::ofstream
 
 // Added for cooridnate frame conversions
 #include "../include/gnss_tools.h"
@@ -32,89 +33,116 @@ GNSS_Tools m_GNSS_Tools;
 
 // added for logging result from ceres, and other information inlcuding computation load
 #include "../include/ceres_logger.h"
+#include "../include/utility.h"
 
 // Custom parameterization for pose (position + quaternion)
 class PoseParameterization : public ceres::LocalParameterization {
 public:
     virtual ~PoseParameterization() {}
 
-    // Position is updated as-is, quaternion through quaternion multiplication
-    virtual bool Plus(const double* x, const double* delta, double* x_plus_delta) const {
-        // Position update: simple addition
-        x_plus_delta[0] = x[0] + delta[0];
-        x_plus_delta[1] = x[1] + delta[1];
-        x_plus_delta[2] = x[2] + delta[2];
-        
-        // Quaternion update: quaternion multiplication
-        const double* q = x + 3;
-        Eigen::Quaterniond q_x(q[0], q[1], q[2], q[3]);
-        
-        // Convert small delta rotation to quaternion
-        Eigen::Quaterniond dq;
-        const double theta_squared = delta[3] * delta[3] + delta[4] * delta[4] + delta[5] * delta[5];
-        
-        if (theta_squared > 0.0) {
-            const double theta = std::sqrt(theta_squared);
-            const double half_theta = theta * 0.5;
-            const double scale = sin(half_theta) / theta;
-            dq = Eigen::Quaterniond(cos(half_theta), 
-                                     delta[3] * scale,
-                                     delta[4] * scale,
-                                     delta[5] * scale);
-        } else {
-            dq = Eigen::Quaterniond::Identity();
-        }
-        
-        // Apply update: q_new = q_x * dq
-        Eigen::Quaterniond q_result = q_x * dq;
-        q_result.normalize();
-        
-        x_plus_delta[3] = q_result.w();
-        x_plus_delta[4] = q_result.x();
-        x_plus_delta[5] = q_result.y();
-        x_plus_delta[6] = q_result.z();
-        
+    bool Plus(const double *x, const double *delta, double *x_plus_delta) const
+    {
+        Eigen::Map<const Eigen::Vector3d> _p(x);
+        Eigen::Map<const Eigen::Quaterniond> _q(x + 3);
+
+        Eigen::Map<const Eigen::Vector3d> dp(delta);
+
+        Eigen::Quaterniond dq = Utility::deltaQ(Eigen::Map<const Eigen::Vector3d>(delta + 3));
+
+        Eigen::Map<Eigen::Vector3d> p(x_plus_delta);
+        Eigen::Map<Eigen::Quaterniond> q(x_plus_delta + 3);
+
+        p = _p + dp;
+        q = (_q * dq).normalized();
+
         return true;
     }
+
+    bool ComputeJacobian(const double *x, double *jacobian) const
+    {
+        Eigen::Map<Eigen::Matrix<double, 7, 6, Eigen::RowMajor>> j(jacobian);
+        j.topRows<6>().setIdentity();
+        j.bottomRows<1>().setZero();
+
+        return true;
+    }
+    // Position is updated as-is, quaternion through quaternion multiplication
+    // virtual bool Plus(const double* x, const double* delta, double* x_plus_delta) const {
+    //     // Position update: simple addition
+    //     x_plus_delta[0] = x[0] + delta[0];
+    //     x_plus_delta[1] = x[1] + delta[1];
+    //     x_plus_delta[2] = x[2] + delta[2];
+        
+    //     // Quaternion update: quaternion multiplication
+    //     const double* q = x + 3;
+    //     Eigen::Quaterniond q_x(q[0], q[1], q[2], q[3]);
+        
+    //     // Convert small delta rotation to quaternion
+    //     Eigen::Quaterniond dq;
+    //     const double theta_squared = delta[3] * delta[3] + delta[4] * delta[4] + delta[5] * delta[5];
+        
+    //     if (theta_squared > 0.0) {
+    //         const double theta = std::sqrt(theta_squared);
+    //         const double half_theta = theta * 0.5;
+    //         const double scale = sin(half_theta) / theta;
+    //         dq = Eigen::Quaterniond(cos(half_theta), 
+    //                                  delta[3] * scale,
+    //                                  delta[4] * scale,
+    //                                  delta[5] * scale);
+    //     } else {
+    //         dq = Eigen::Quaterniond::Identity();
+    //     }
+        
+    //     // Apply update: q_new = q_x * dq
+    //     Eigen::Quaterniond q_result = q_x * dq;
+    //     q_result.normalize();
+        
+    //     x_plus_delta[3] = q_result.w();
+    //     x_plus_delta[4] = q_result.x();
+    //     x_plus_delta[5] = q_result.y();
+    //     x_plus_delta[6] = q_result.z();
+        
+    //     return true;
+    // }
     
     virtual int GlobalSize() const { return 7; }
     virtual int LocalSize() const { return 6; }
     
-    virtual bool ComputeJacobian(const double* x, double* jacobian) const {
-        // Initialize to zero
-        Eigen::Map<Eigen::Matrix<double, 7, 6, Eigen::RowMajor>> J(jacobian);
-        J.setZero();
+    // virtual bool ComputeJacobian(const double* x, double* jacobian) const {
+    //     // Initialize to zero
+    //     Eigen::Map<Eigen::Matrix<double, 7, 6, Eigen::RowMajor>> J(jacobian);
+    //     J.setZero();
         
-        // Position part: identity
-        J.block<3, 3>(0, 0).setIdentity();
+    //     // Position part: identity
+    //     J.block<3, 3>(0, 0).setIdentity();
         
-        // Quaternion part: rotation Jacobian
-        // Eigen::Map<const Eigen::Quaterniond> q(x + 3);
+    //     // Quaternion part: rotation Jacobian
+    //     // Eigen::Map<const Eigen::Quaterniond> q(x + 3);
         
-        // double qw = q.w(), qx = q.x(), qy = q.y(), qz = q.z();
+    //     // double qw = q.w(), qx = q.x(), qy = q.y(), qz = q.z();
 
-        Eigen::Map<const Eigen::Quaterniond> q_map(x + 3);
-        Eigen::Quaterniond q = q_map;
-        double qw = q.w(), qx = q.x(), qy = q.y(), qz = q.z();
+    //     Eigen::Map<const Eigen::Quaterniond> q_map(x + 3);
+    //     Eigen::Quaterniond q = q_map;
+    //     double qw = q.w(), qx = q.x(), qy = q.y(), qz = q.z();
 
-        J(3, 3) = -qx * 0.5;
-        J(3, 4) = -qy * 0.5;
-        J(3, 5) = -qz * 0.5;
+    //     J(3, 3) = -qx * 0.5;
+    //     J(3, 4) = -qy * 0.5;
+    //     J(3, 5) = -qz * 0.5;
         
-        J(4, 3) =  qw * 0.5;
-        J(4, 4) = -qz * 0.5;
-        J(4, 5) =  qy * 0.5;
+    //     J(4, 3) =  qw * 0.5;
+    //     J(4, 4) = -qz * 0.5;
+    //     J(4, 5) =  qy * 0.5;
         
-        J(5, 3) =  qz * 0.5;
-        J(5, 4) =  qw * 0.5;
-        J(5, 5) = -qx * 0.5;
+    //     J(5, 3) =  qz * 0.5;
+    //     J(5, 4) =  qw * 0.5;
+    //     J(5, 5) = -qx * 0.5;
         
-        J(6, 3) = -qy * 0.5;
-        J(6, 4) =  qx * 0.5;
-        J(6, 5) =  qw * 0.5;
+    //     J(6, 3) = -qy * 0.5;
+    //     J(6, 4) =  qx * 0.5;
+    //     J(6, 5) =  qw * 0.5;
         
-        return true;
-    }
+    //     return true;
+    // }
 };
 
 // CRITICAL: Hard constraint on bias magnitude
@@ -1460,6 +1488,10 @@ public:
         private_nh.param<double>("min_integration_dt", min_integration_dt_, 1e-8); // Minimum step size
         private_nh.param<double>("bias_correction_threshold", bias_correction_threshold_, 0.05); // Threshold for bias validity check
 
+        private_nh.param<std::string>("bias_log_path", bias_path, "");
+        openBiasLogFile();
+
+
         // ceres logger path initialization
             std::string results_log_param;
             std::string metrics_log_param;
@@ -1473,9 +1505,9 @@ public:
                 std::stringstream ss_results;
                 char mbstr[100];
                 if (std::strftime(mbstr, sizeof(mbstr), "%Y%m%d_%H%M%S", std::localtime(&now))) {
-                    ss_results << "default_fusion_results_" << mbstr << ".txt";
+                    ss_results << "./src/data/default_fusion_results_" << mbstr << ".txt";
                 } else { // Fallback if strftime fails
-                    ss_results << "default_fusion_results_" << now << ".txt";
+                    ss_results << "./src/data/default_fusion_results_" << now << ".txt";
                 }
                 final_results_log_path = ss_results.str();
                 ROS_INFO("Parameter 'results_log_path' is empty. Using default filename: %s", final_results_log_path.c_str());
@@ -1486,9 +1518,9 @@ public:
                 std::stringstream ss_metrics;
                 char mbstr[100];
                 if (std::strftime(mbstr, sizeof(mbstr), "%Y%m%d_%H%M%S", std::localtime(&now))) {
-                    ss_metrics << "default_fusion_metrics_" << mbstr << ".txt";
+                    ss_metrics << "./src/data/default_fusion_metrics_" << mbstr << ".txt";
                 } else { // Fallback if strftime fails
-                    ss_metrics << "default_fusion_metrics_" << now << ".txt";
+                    ss_metrics << "./src/data/default_fusion_metrics_" << now << ".txt";
                 }
                 final_metrics_log_path = ss_metrics.str();
                 ROS_INFO("Parameter 'metrics_log_path' is empty. Using default filename: %s", final_metrics_log_path.c_str());
@@ -1827,6 +1859,8 @@ private:
 
     // ceres logger to log optimization results and computation loads
     CeresLogger logger_;
+    std::string bias_path;
+    std::ofstream bias_fs;
     
     // UWB measurements
     struct UwbMeasurement {
@@ -2630,6 +2664,9 @@ private:
                 double gps_noise_magnitude_ = 5.0;
                 // Only add noise to every nth message to create visible outliers
                 static int msg_counter = 0;
+
+                if(msg_counter % 5== 0){
+
                 
                 // Generate random noise
                 double noise_x = ((double)rand() / RAND_MAX * 2.0 - 1.0) * gps_noise_magnitude_;
@@ -2645,6 +2682,7 @@ private:
                 // Log the injected noise
                 ROS_INFO("Injected GPS noise: [%.2f, %.2f, %.2f] meters at t=%.3f", 
                         noise_x, noise_y, noise_z, unix_timestamp);
+                }
             }
             
             // Get velocity (convert from NED to ENU)
@@ -2663,7 +2701,8 @@ private:
             double azimuth_rad = msg->azimuth * M_PI / 180.0;
             
             // Convert NED azimuth to ENU yaw
-            double yaw_enu = M_PI/2.0 - azimuth_rad;
+            // double yaw_enu = M_PI/2.0 - azimuth_rad;
+            double yaw_enu = - azimuth_rad;  // NED to ENU conversion
             
             // Create quaternion from euler angles
             Eigen::Quaterniond orientation = 
@@ -2720,10 +2759,6 @@ private:
                     ROS_INFO("Initializing system with GPS measurement at timestamp: %.3f", unix_timestamp);
                     initializeFromGps(measurement);
                     is_initialized_ = true;
-                    current_preint_test.reset();
-                    current_preint_test.setBias(initial_acc_bias_, initial_gyro_bias_);
-                    current_preint_test.set_gravity(gravity_magnitude_);
-                    current_preint_test.set_noise(imu_acc_noise_, imu_gyro_noise_, imu_acc_bias_noise_, imu_gyro_bias_noise_);
                 } else {
                     ROS_INFO_THROTTLE(1.0, "Waiting for IMU data before GPS initialization...");
                 }
@@ -2801,6 +2836,12 @@ private:
                 // Use a default orientation (or keep previous if available)
                 if (current_state_.orientation.w() == 0) {
                     current_state_.orientation = Eigen::Quaterniond::Identity();
+                    // Eigen::Quaterniond q(
+                    //     Eigen::AngleAxisd(133.9, Eigen::Vector3d::UnitZ()) *
+                    //     Eigen::AngleAxisd(-1.738, Eigen::Vector3d::UnitY()) *
+                    //     Eigen::AngleAxisd(0.440, Eigen::Vector3d::UnitX())
+                    // );
+                    // current_state_.orientation = q.normalized();
                 }
                 // Try to find IMU orientation if available
                 sensor_msgs::Imu closest_imu = findClosestImuMeasurement(gps.timestamp);
@@ -2832,6 +2873,17 @@ private:
                     0.0
                 );
             }
+
+            // initialize the preintegration
+            current_preint_test.reset();
+            current_preint_test.set_gravity(gravity_magnitude_);
+            current_preint_test.setBias(initial_acc_bias_, initial_gyro_bias_);
+            current_preint_test.set_noise(
+                imu_acc_noise_, imu_gyro_noise_,
+                imu_acc_bias_noise_, imu_gyro_bias_noise_
+            );
+
+
             
             // Initialize with proper non-zero biases
             current_state_.acc_bias = initial_acc_bias_;
@@ -2921,6 +2973,7 @@ private:
             
             // Skip if the time difference is too small
             if (dt < 0.01) {
+                ROS_WARN("Ignoring GPS keyframe creation - time difference too small: %.3f sec", dt);
                 return;
             }
 
@@ -2960,16 +3013,20 @@ private:
             } else {
                 // use IMU orientation if not using GPS
                 // Keep current orientation or try to use IMU
-                sensor_msgs::Imu closest_imu = findClosestImuMeasurement(gps.timestamp);
-                if (closest_imu.header.stamp.toSec() > 0 && 
-                    closest_imu.orientation_covariance[0] != -1) {
-                        propagated_state_gps.orientation = Eigen::Quaterniond(
-                        closest_imu.orientation.w,
-                        closest_imu.orientation.x,
-                        closest_imu.orientation.y,
-                        closest_imu.orientation.z
-                    ).normalized();
-                } 
+                // sensor_msgs::Imu closest_imu = findClosestImuMeasurement(gps.timestamp);
+                // if (closest_imu.header.stamp.toSec() > 0 && 
+                //     closest_imu.orientation_covariance[0] != -1) {
+                //         propagated_state_gps.orientation = Eigen::Quaterniond(
+                //         closest_imu.orientation.w,
+                //         closest_imu.orientation.x,
+                //         closest_imu.orientation.y,
+                //         closest_imu.orientation.z
+                //     ).normalized();
+                // } 
+
+                // use the last keyframe's orientation
+                propagated_state_gps.orientation = last_keyframe.orientation;
+
             }
             
             
@@ -3025,6 +3082,38 @@ private:
     // ==================== EXISTING METHODS WITH GPS SUPPORT ====================
     
     // Helper functions
+
+    // *** Helper to open file and write header (called from constructor) ***
+    void openBiasLogFile() {
+        bias_fs.open(bias_path, std::ios_base::out); // Open in write mode, overwriting if exists
+        if (!bias_fs.is_open()) {
+            ROS_ERROR("Failed to open bias log file for writing: %s", bias_path.c_str());
+            return;
+        }
+        // Write header
+        bias_fs << "timestamp,acc_bias_x,acc_bias_y,acc_bias_z,gyro_bias_x,gyro_bias_y,gyro_bias_z\n";
+        bias_fs << std::fixed << std::setprecision(9); // Set precision for the file stream
+        ROS_INFO("Bias log file opened and header written: %s", bias_path.c_str());
+    }
+
+    // *** Modified function to log a single keyframe's bias ***
+    void logKeyframeBias(const State& keyframe_state_to_log) {
+        if (!bias_fs.is_open()) {
+            ROS_WARN_THROTTLE(5.0, "Bias log file is not open. Cannot log bias for timestamp %.6f.", keyframe_state_to_log.timestamp);
+            return;
+        }
+
+        bias_fs << keyframe_state_to_log.timestamp << ","
+                       << keyframe_state_to_log.acc_bias.x() << "," << keyframe_state_to_log.acc_bias.y() << "," << keyframe_state_to_log.acc_bias.z() << ","
+                       << keyframe_state_to_log.gyro_bias.x() << "," << keyframe_state_to_log.gyro_bias.y() << "," << keyframe_state_to_log.gyro_bias.z() << "\n";
+        
+        // Flush periodically or rely on fstream's buffering. For "real-time" visibility, occasional flush is good.
+        // Consider flushing less frequently if performance is an issue.
+        static int log_counter = 0;
+        if (++log_counter % 10 == 0) { // Flush every 10 entries, for example
+            bias_fs.flush();
+        }
+    }
     
     // IMPROVED: RK4 integration for quaternion
     void rk4IntegrateOrientation(const Eigen::Vector3d& omega1, const Eigen::Vector3d& omega2, 
@@ -3286,9 +3375,9 @@ private:
             current_state_.acc_bias = initial_acc_bias_;
             current_state_.gyro_bias = initial_gyro_bias_;
 
-            ROS_INFO("Initialized Acc Bias [%.6f, %.6f, %.6f], Gyro Bias [%.6f, %.6f, %.6f]",
-                current_state_.acc_bias.x(), current_state_.acc_bias.y(), current_state_.acc_bias.z(),
-                current_state_.gyro_bias.x(), current_state_.gyro_bias.y(), current_state_.gyro_bias.z());
+            // ROS_INFO("Initialized Acc Bias [%.6f, %.6f, %.6f], Gyro Bias [%.6f, %.6f, %.6f]",
+            //     current_state_.acc_bias.x(), current_state_.acc_bias.y(), current_state_.acc_bias.z(),
+            //     current_state_.gyro_bias.x(), current_state_.gyro_bias.y(), current_state_.gyro_bias.z());
             
             current_state_.timestamp = 0;
             
@@ -3388,21 +3477,21 @@ private:
     void imuCallback(const sensor_msgs::Imu::ConstPtr& msg) {
         try {
 
-            // std::lock_guard<std::mutex> lock(data_mutex_);
-            // // add IMU measurement to the preintegration map
-            // // extract the data first, including the stamp in seconds, the acceleration, and the angular velocity
-            // double unix_timestamp = msg->header.stamp.toSec();
-            // Eigen::Vector3d acc(msg->linear_acceleration.x, msg->linear_acceleration.y, msg->linear_acceleration.z);
-            // Eigen::Vector3d gyro(msg->angular_velocity.x, msg->angular_velocity.y, msg->angular_velocity.z);
-            // // add the IMU measurement to the preintegration map
-            // current_preint_test.push_back(unix_timestamp, acc, gyro);
-            // // ROS_INFO("[IMU] %f, %f, %f, %f, %f, %f", unix_timestamp, acc.x(), acc.y(), acc.z(), gyro.x(), gyro.y(), gyro.z());
+            std::lock_guard<std::mutex> lock(data_mutex_);
+            // add IMU measurement to the preintegration map
+            // extract the data first, including the stamp in seconds, the acceleration, and the angular velocity
+            double unix_timestamp = msg->header.stamp.toSec();
+            Eigen::Vector3d acc(msg->linear_acceleration.x, msg->linear_acceleration.y, msg->linear_acceleration.z);
+            Eigen::Vector3d gyro(msg->angular_velocity.x, msg->angular_velocity.y, msg->angular_velocity.z);
+            // add the IMU measurement to the preintegration map
+            current_preint_test.push_back(unix_timestamp, acc, gyro);
+            // ROS_INFO("[IMU] %f, %f, %f, %f, %f, %f", unix_timestamp, acc.x(), acc.y(), acc.z(), gyro.x(), gyro.y(), gyro.z());
             
 
             static int imu_count = 0;
             static double last_report_time = 0;
             
-            std::lock_guard<std::mutex> lock(data_mutex_);
+            // std::lock_guard<std::mutex> lock(data_mutex_);
             
             double timestamp = msg->header.stamp.toSec();
             has_imu_data_ = true;
@@ -3677,10 +3766,10 @@ private:
                 pose_param1[0] = oldest_state.position.x();
                 pose_param1[1] = oldest_state.position.y();
                 pose_param1[2] = oldest_state.position.z();
-                pose_param1[3] = oldest_state.orientation.w();
-                pose_param1[4] = oldest_state.orientation.x();
-                pose_param1[5] = oldest_state.orientation.y();
-                pose_param1[6] = oldest_state.orientation.z();
+                pose_param1[3] = oldest_state.orientation.x();
+                pose_param1[4] = oldest_state.orientation.y();
+                pose_param1[5] = oldest_state.orientation.z();
+                pose_param1[6] = oldest_state.orientation.w();
                 
                 vel_param1[0] = oldest_state.velocity.x();
                 vel_param1[1] = oldest_state.velocity.y();
@@ -3697,10 +3786,10 @@ private:
                 pose_param2[0] = next_state.position.x();
                 pose_param2[1] = next_state.position.y();
                 pose_param2[2] = next_state.position.z();
-                pose_param2[3] = next_state.orientation.w();
-                pose_param2[4] = next_state.orientation.x();
-                pose_param2[5] = next_state.orientation.y();
-                pose_param2[6] = next_state.orientation.z();
+                pose_param2[3] = next_state.orientation.x();
+                pose_param2[4] = next_state.orientation.y();
+                pose_param2[5] = next_state.orientation.z();
+                pose_param2[6] = next_state.orientation.w();
                 
                 vel_param2[0] = next_state.velocity.x();
                 vel_param2[1] = next_state.velocity.y();
@@ -3951,103 +4040,103 @@ private:
     // to obtain more information from 2 frames including the 
     void performPreintegrationBetweenKeyframes_(const double &start_time, const double &end_time)
     {
-        // // save the preint data to the map
-        // preintegration_map_test[std::make_pair(start_time, end_time)] = current_preint_test;
-
-        // // ROS_INFO("Current preint data:");
-        // // ROS_INFO("delta_p: %f, %f, %f", current_preint_test.getDeltaAlpha().x(), current_preint_test.getDeltaAlpha().y(), current_preint_test.getDeltaAlpha().z());
-
-        // // // print the preint data
-        // // ROS_INFO("Preintegration data saved for keyframes: [%.3f, %.3f]", start_time, end_time);
-
-        // // reset the current preint data to accept imu messages for next keyframe
-        // current_preint_test.reset();
-
-        try {
-            // 0. 输入有效性检查
-            if (start_time >= end_time) {
-                ROS_WARN("performPreintegrationBetweenKeyframes_ called with start_time (%.6f) >= end_time (%.6f). Skipping.", start_time, end_time);
-                return;
-            }
-
-            // // 1. 创建一个新的 imu_preint 对象用于当前的预积分段
-            // //    或者，如果你希望复用 current_preint_test_，确保在开始前正确重置并设置偏置
-            // imu_preint current_segment_preint; // 局部变量，每次调用都创建一个新的
-            // current_segment_preint.reset();
-            // current_segment_preint.setBias(acc_bias, gyro_bias);
-            // current_segment_preint.set_gravity(gravity_magnitude_); // Assuming gravity_magnitude_ is a member
-            // current_segment_preint.set_noise(imu_acc_noise_, imu_gyro_noise_,
-            //                                imu_acc_bias_noise_, imu_gyro_bias_noise_); // Assuming these are members
-
-            // 2. 从 imu_buffer_ 中搜集 start_time 和 end_time 之间的 IMU 数据
-            std::vector<sensor_msgs::Imu> relevant_imu_msgs;
-            relevant_imu_msgs.reserve(static_cast<size_t>((end_time - start_time) * 400 + 50)); // 假设IMU频率约为400Hz
-
-            // ROS_DEBUG("Searching for IMU data between %.6f and %.6f for preintegration.", start_time, end_time);
-            int imu_added_count = 0;
-            for (const auto& imu_msg : imu_buffer_) {
-                double imu_timestamp = imu_msg.header.stamp.toSec();
-                // 我们需要包含 start_time 之后 (但不完全等于start_time，因为第一帧的状态已经确定)
-                // 并且 小于或等于 end_time 的数据
-                // 在实际的VIO中，第一条IMU数据通常是用来初始化上一个状态到这个IMU数据点之间的预积分
-                // 这里我们假设start_time是上一个关键帧的时间戳，end_time是当前关键帧的时间戳
-                // 我们需要的是 (start_time, end_time] 这个区间的IMU数据
-                if (imu_timestamp > start_time && imu_timestamp <= end_time) {
-                    relevant_imu_msgs.push_back(imu_msg);
-                }
-            }
-
-            // 如果没有找到相关的IMU数据
-            if (relevant_imu_msgs.empty()) {
-                ROS_WARN("No IMU messages found between %.6f and %.6f for preintegration.", start_time, end_time);
-                // 即使没有IMU数据，也可能需要存一个空的或者具有零时间间隔的预积分对象，
-                // 或者根据具体逻辑决定是否跳过。这里我们存一个空的。
+        // save the preint data to the map
         preintegration_map_test[std::make_pair(start_time, end_time)] = current_preint_test;
-                return;
-            }
 
-            // 对搜集到的IMU数据按时间戳排序 (imu_buffer_ 通常是已排序的，但以防万一)
-            std::sort(relevant_imu_msgs.begin(), relevant_imu_msgs.end(),
-                      [](const sensor_msgs::Imu& a, const sensor_msgs::Imu& b) {
-                          return a.header.stamp.toSec() < b.header.stamp.toSec();
-                      });
+        ROS_INFO("Current preint data:");
+        ROS_INFO("delta_p: %f, %f, %f", current_preint_test.getDeltaAlpha().x(), current_preint_test.getDeltaAlpha().y(), current_preint_test.getDeltaAlpha().z());
 
-            // 3. 将搜集到的 IMU 数据逐条 push_back 到 imu_preint 对象中
-            // 注意：imu_preint 的 push_back 应该处理时间戳和计算dt的逻辑
-            // 第一条IMU数据用于设置初始时间，后续数据用于积分
-            // 或者，imu_preint的push_back应该从第二个imu数据开始计算dt和积分
+        // print the preint data
+        ROS_INFO("Preintegration data saved for keyframes: [%.3f, %.3f]", start_time, end_time);
 
-            // 如果imu_preint的push_back期望第一个数据点不参与dt计算（仅作为时间基准），则直接全部push
-            for (const auto& imu_msg : relevant_imu_msgs) {
-                double unix_timestamp = imu_msg.header.stamp.toSec();
-                Eigen::Vector3d acc(imu_msg.linear_acceleration.x, imu_msg.linear_acceleration.y, imu_msg.linear_acceleration.z);
-                Eigen::Vector3d gyro(imu_msg.angular_velocity.x, imu_msg.angular_velocity.y, imu_msg.angular_velocity.z);
+        // reset the current preint data to accept imu messages for next keyframe
+        current_preint_test.reset();
+
+        // try {
+        //     // 0. 输入有效性检查
+        //     if (start_time >= end_time) {
+        //         ROS_WARN("performPreintegrationBetweenKeyframes_ called with start_time (%.6f) >= end_time (%.6f). Skipping.", start_time, end_time);
+        //         return;
+        //     }
+
+        //     // // 1. 创建一个新的 imu_preint 对象用于当前的预积分段
+        //     // //    或者，如果你希望复用 current_preint_test_，确保在开始前正确重置并设置偏置
+        //     // imu_preint current_segment_preint; // 局部变量，每次调用都创建一个新的
+        //     // current_segment_preint.reset();
+        //     // current_segment_preint.setBias(acc_bias, gyro_bias);
+        //     // current_segment_preint.set_gravity(gravity_magnitude_); // Assuming gravity_magnitude_ is a member
+        //     // current_segment_preint.set_noise(imu_acc_noise_, imu_gyro_noise_,
+        //     //                                imu_acc_bias_noise_, imu_gyro_bias_noise_); // Assuming these are members
+
+        //     // 2. 从 imu_buffer_ 中搜集 start_time 和 end_time 之间的 IMU 数据
+        //     std::vector<sensor_msgs::Imu> relevant_imu_msgs;
+        //     relevant_imu_msgs.reserve(static_cast<size_t>((end_time - start_time) * 400 + 50)); // 假设IMU频率约为400Hz
+
+        //     // ROS_DEBUG("Searching for IMU data between %.6f and %.6f for preintegration.", start_time, end_time);
+        //     int imu_added_count = 0;
+        //     for (const auto& imu_msg : imu_buffer_) {
+        //         double imu_timestamp = imu_msg.header.stamp.toSec();
+        //         // 我们需要包含 start_time 之后 (但不完全等于start_time，因为第一帧的状态已经确定)
+        //         // 并且 小于或等于 end_time 的数据
+        //         // 在实际的VIO中，第一条IMU数据通常是用来初始化上一个状态到这个IMU数据点之间的预积分
+        //         // 这里我们假设start_time是上一个关键帧的时间戳，end_time是当前关键帧的时间戳
+        //         // 我们需要的是 (start_time, end_time] 这个区间的IMU数据
+        //         if (imu_timestamp > start_time && imu_timestamp <= end_time) {
+        //             relevant_imu_msgs.push_back(imu_msg);
+        //         }
+        //     }
+
+        //     // 如果没有找到相关的IMU数据
+        //     if (relevant_imu_msgs.empty()) {
+        //         ROS_WARN("No IMU messages found between %.6f and %.6f for preintegration.", start_time, end_time);
+        //         // 即使没有IMU数据，也可能需要存一个空的或者具有零时间间隔的预积分对象，
+        //         // 或者根据具体逻辑决定是否跳过。这里我们存一个空的。
+        // preintegration_map_test[std::make_pair(start_time, end_time)] = current_preint_test;
+        //         return;
+        //     }
+
+        //     // 对搜集到的IMU数据按时间戳排序 (imu_buffer_ 通常是已排序的，但以防万一)
+        //     std::sort(relevant_imu_msgs.begin(), relevant_imu_msgs.end(),
+        //               [](const sensor_msgs::Imu& a, const sensor_msgs::Imu& b) {
+        //                   return a.header.stamp.toSec() < b.header.stamp.toSec();
+        //               });
+
+        //     // 3. 将搜集到的 IMU 数据逐条 push_back 到 imu_preint 对象中
+        //     // 注意：imu_preint 的 push_back 应该处理时间戳和计算dt的逻辑
+        //     // 第一条IMU数据用于设置初始时间，后续数据用于积分
+        //     // 或者，imu_preint的push_back应该从第二个imu数据开始计算dt和积分
+
+        //     // 如果imu_preint的push_back期望第一个数据点不参与dt计算（仅作为时间基准），则直接全部push
+        //     for (const auto& imu_msg : relevant_imu_msgs) {
+        //         double unix_timestamp = imu_msg.header.stamp.toSec();
+        //         Eigen::Vector3d acc(imu_msg.linear_acceleration.x, imu_msg.linear_acceleration.y, imu_msg.linear_acceleration.z);
+        //         Eigen::Vector3d gyro(imu_msg.angular_velocity.x, imu_msg.angular_velocity.y, imu_msg.angular_velocity.z);
                 
-                // 确保imu_preint的push_back函数内部能正确处理第一个IMU数据和后续数据的积分
-                if (!current_preint_test.push_back(unix_timestamp, acc, gyro)) {
-                    ROS_WARN("Failed to push_back IMU data at %.6f into preintegration object.", unix_timestamp);
-                } else {
-                    imu_added_count++;
-                }
-            }
+        //         // 确保imu_preint的push_back函数内部能正确处理第一个IMU数据和后续数据的积分
+        //         if (!current_preint_test.push_back(unix_timestamp, acc, gyro)) {
+        //             ROS_WARN("Failed to push_back IMU data at %.6f into preintegration object.", unix_timestamp);
+        //         } else {
+        //             imu_added_count++;
+        //         }
+        //     }
             
-            // ROS_INFO("Added %d IMU messages to preintegration between %.6f and %.6f.", imu_added_count, start_time, end_time);
+        //     // ROS_INFO("Added %d IMU messages to preintegration between %.6f and %.6f.", imu_added_count, start_time, end_time);
 
-            // 4. 将完成预积分的 imu_preint 对象存入 preintegration_map_test
-            preintegration_map_test[std::make_pair(start_time, end_time)] = current_preint_test;
+        //     // 4. 将完成预积分的 imu_preint 对象存入 preintegration_map_test
+        //     preintegration_map_test[std::make_pair(start_time, end_time)] = current_preint_test;
 
-            // ROS_INFO("Preintegration data saved for keyframes: [%.6f, %.6f]. Delta_t: %.4f, Pos_Delta: [%.3f, %.3f, %.3f]",
-            //          start_time, end_time,
-            //          current_preint_test.get_sum_dt(),
-            //          current_preint_test.getDeltaAlpha().x(),
-            //          current_preint_test.getDeltaAlpha().y(),
-            //          current_preint_test.getDeltaAlpha().z());
+        //     // ROS_INFO("Preintegration data saved for keyframes: [%.6f, %.6f]. Delta_t: %.4f, Pos_Delta: [%.3f, %.3f, %.3f]",
+        //     //          start_time, end_time,
+        //     //          current_preint_test.get_sum_dt(),
+        //     //          current_preint_test.getDeltaAlpha().x(),
+        //     //          current_preint_test.getDeltaAlpha().y(),
+        //     //          current_preint_test.getDeltaAlpha().z());
 
-            current_preint_test.reset(); // 重置当前预积分对象以接受下一个关键帧的IMU数据
+        //     current_preint_test.reset(); // 重置当前预积分对象以接受下一个关键帧的IMU数据
 
-        } catch (const std::exception& e) {
-            ROS_ERROR("Exception in performPreintegrationBetweenKeyframes_: %s", e.what());
-        }
+        // } catch (const std::exception& e) {
+        //     ROS_ERROR("Exception in performPreintegrationBetweenKeyframes_: %s", e.what());
+        // }
     }
 
     // IMPROVED: Perform IMU pre-integration between keyframes with RK4 and bias random walk
@@ -4942,12 +5031,14 @@ private:
 
                 Eigen::Quaterniond q = state.orientation;
                 q.normalize();
+                // print out the quaternion
+                ROS_INFO("Quaternion of state %i: [%.2f, %.2f, %.2f, %.2f]", i, q.w(), q.x(), q.y(), q.z());
                 
                 // Orientation (quaternion): w, x, y, z
-                var.pose[3] = q.w();
-                var.pose[4] = q.x();
-                var.pose[5] = q.y();
-                var.pose[6] = q.z();
+                var.pose[3] = q.x();
+                var.pose[4] = q.y();
+                var.pose[5] = q.z();
+                var.pose[6] = q.w();
                 
                 // Velocity
                 var.velocity[0] = state.velocity.x();
@@ -4975,6 +5066,8 @@ private:
             // Add pose parameterization
             for (size_t i = 0; i < state_window_.size(); ++i) {
                 problem.AddParameterBlock(variables[i].pose, 7, pose_parameterization);
+                // problem.AddParameterBlock(variables[i].velocity, 3);
+                // problem.AddParameterBlock(variables[i].bias, 6);
             }
             
             // If bias estimation is disabled, set biases constant
@@ -5196,19 +5289,22 @@ private:
                                            variables[i+1].pose, variables[i+1].velocity, variables[i+1].bias);
 
                     ROS_INFO("Add IMU factor between keyframes [%.3f-%.3f]", start_time, end_time);
-                    // ROS_INFO("IMU preintegration: dt=%.3f, dp=[%.3f,%.3f,%.3f], dv=[%.3f,%.3f,%.3f], dq=[%.3f,%.3f,%.3f,%.3f]",
-                    //         preint.get_sum_dt(), preint.getDeltaAlpha().x(), preint.getDeltaAlpha().y(), preint.getDeltaAlpha().z(),
-                    //         preint.getDeltaBeta().x(), preint.getDeltaBeta().y(), preint.getDeltaBeta().z(),
-                    //         preint.getDeltaGamma().w(), preint.getDeltaGamma().x(), preint.getDeltaGamma().y(), preint.getDeltaGamma().z());
+                    ROS_INFO("IMU preintegration: dt=%.3f, dp=[%.3f,%.3f,%.3f], dv=[%.3f,%.3f,%.3f], dq=[%.3f,%.3f,%.3f,%.3f]",
+                            preint.get_sum_dt(), preint.getDeltaAlpha().x(), preint.getDeltaAlpha().y(), preint.getDeltaAlpha().z(),
+                            preint.getDeltaBeta().x(), preint.getDeltaBeta().y(), preint.getDeltaBeta().z(),
+                            preint.getDeltaGamma().w(), preint.getDeltaGamma().x(), preint.getDeltaGamma().y(), preint.getDeltaGamma().z());
                     // ROS_INFO("IMU preintegration: dp=[%.3f,%.3f,%.3f], dv=[%.3f,%.3f,%.3f]",
                     //         preint.alpha.x(), preint.alpha.y(), preint.alpha.z(),
                     //         preint.beta.x(), preint.beta.y(), preint.beta.z());
-                    // ROS_INFO("State positions: [%.2f, %.2f, %.2f] [%.2f, %.2f, %.2f]",
-                    //         variables[i].pose[0], variables[i].pose[1], variables[i].pose[2],
-                    //         variables[i+1].pose[0], variables[i+1].pose[1], variables[i+1].pose[2]);
-                    // ROS_INFO("State velocities: [%.2f, %.2f, %.2f] [%.2f, %.2f, %.2f]",
-                    //         variables[i].velocity[0], variables[i].velocity[1], variables[i].velocity[2],
-                    //         variables[i+1].velocity[0], variables[i+1].velocity[1], variables[i+1].velocity[2]);
+                    ROS_INFO("State positions: [%.2f, %.2f, %.2f] [%.2f, %.2f, %.2f]",
+                            variables[i].pose[0], variables[i].pose[1], variables[i].pose[2],
+                            variables[i+1].pose[0], variables[i+1].pose[1], variables[i+1].pose[2]);
+                    ROS_INFO("State velocities: [%.2f, %.2f, %.2f] [%.2f, %.2f, %.2f]",
+                            variables[i].velocity[0], variables[i].velocity[1], variables[i].velocity[2],
+                            variables[i+1].velocity[0], variables[i+1].velocity[1], variables[i+1].velocity[2]);
+                    ROS_INFO("State Orientation: [%.2f, %.2f, %.2f, %.2f] [%.2f, %.2f, %.2f, %.2f]",
+                            variables[i].pose[3], variables[i].pose[4], variables[i].pose[5], variables[i].pose[6],
+                            variables[i+1].pose[3], variables[i+1].pose[4], variables[i+1].pose[5], variables[i+1].pose[6]);
 
                     // 计算初始 residual
                     // double residuals[15]; 
@@ -5242,8 +5338,9 @@ private:
             // Configure solver options
             ceres::Solver::Options options;
             options.max_num_iterations = max_iterations_;
-            options.linear_solver_type = ceres::SPARSE_NORMAL_CHOLESKY;
-            // options.linear_solver_type = ceres::SPARSE_SCHUR;
+            // options.linear_solver_type = ceres::SPARSE_NORMAL_CHOLESKY;
+            options.linear_solver_type = ceres::SPARSE_SCHUR;
+            // options.trust_region_strategy_type = ceres::DOGLEG;
 
             ROS_INFO("Optimization problem has %zu residuals and %zu parameter blocks",
                     problem.NumResiduals(), problem.NumParameterBlocks());
@@ -5252,9 +5349,9 @@ private:
             options.minimizer_progress_to_stdout = true;
             options.num_threads = 8;
 
-            //compare with auto computed jacobian
-            // options.check_gradients = true;
-            // options.gradient_check_relative_precision = 1e-2;
+            // //compare with auto computed jacobian
+            options.check_gradients = true;
+            options.gradient_check_relative_precision = 1e-2;
             
             // Solve the optimization problem
             ceres::Solver::Summary summary;
@@ -5311,7 +5408,7 @@ private:
                 
                 // Update orientation
                 state_window_[i].orientation = Eigen::Quaterniond(
-                    variables[i].pose[3], variables[i].pose[4], variables[i].pose[5], variables[i].pose[6]).normalized();
+                    variables[i].pose[6], variables[i].pose[3], variables[i].pose[4], variables[i].pose[5]).normalized();
                 
                 // Get velocity and ensure it's reasonable while preserving direction
                 Eigen::Vector3d new_velocity(
@@ -5338,6 +5435,25 @@ private:
                     // Ensure biases stay within reasonable limits
                     clampBiases(new_acc_bias, new_gyro_bias);
 
+                    // check the difference of new and old biases
+                    double acc_bias_diff = (new_acc_bias - state_window_[i].acc_bias).norm();
+                    double gyro_bias_diff = (new_gyro_bias - state_window_[i].gyro_bias).norm();
+
+                    // If the difference is too large, repropagate the preintegration
+                    if (acc_bias_diff > 0.0005 || gyro_bias_diff > 0.00005) {
+                        // ROS_WARN("Large bias difference detected: acc [%.3f, %.3f, %.3f], gyro [%.3f, %.3f, %.3f]",
+                        //     acc_bias_diff, gyro_bias_diff);
+
+                        std::pair<double, double> key(state_window_[i].timestamp, state_window_[i+1].timestamp);
+                        // repropagate calculating the preintegration
+                        if (preintegration_map_test.find(key) != preintegration_map_test.end()) {
+                            auto& preint = preintegration_map_test[key];
+                            preint.repropagate(new_acc_bias, new_gyro_bias);
+                        }
+                    }
+                    // Clamp biases to ensure they are within reasonable limits
+
+
                     // Update state with clamped biases
                     state_window_[i].acc_bias = new_acc_bias;
                     state_window_[i].gyro_bias = new_gyro_bias;
@@ -5348,12 +5464,6 @@ private:
                         new_acc_bias.x(), new_acc_bias.y(), new_acc_bias.z(),
                         new_gyro_bias.x(), new_gyro_bias.y(), new_gyro_bias.z());
 
-                    // std::pair<double, double> key(state_window_[i].timestamp, state_window_[i+1].timestamp);
-                    // // repropagate calculating the preintegration
-                    // if (preintegration_map_test.find(key) != preintegration_map_test.end()) {
-                    //     auto& preint = preintegration_map_test[key];
-                    //     preint.repropagate(new_acc_bias, new_gyro_bias);
-                    // }
                 }
             }
             
@@ -5423,10 +5533,10 @@ private:
                 pose_data[1] = final_state.position.y();
                 pose_data[2] = final_state.position.z();
                 // Orientation Quaternion (w, x, y, z) - Ensure correct order w,x,y,z
-                pose_data[3] = final_state.orientation.w();
-                pose_data[4] = final_state.orientation.x();
-                pose_data[5] = final_state.orientation.y();
-                pose_data[6] = final_state.orientation.z();
+                pose_data[3] = final_state.orientation.x();
+                pose_data[4] = final_state.orientation.y();
+                pose_data[5] = final_state.orientation.z();
+                pose_data[6] = final_state.orientation.w();
                 logger_.addParameterBlock(prefix + "Pose", pose_data);
 
                 // --- Log Velocity ---

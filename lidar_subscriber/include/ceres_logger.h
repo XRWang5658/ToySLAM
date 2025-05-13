@@ -19,8 +19,16 @@ Date: 2025-05-06
 #include <stdexcept> // If exceptions are needed
 #include <mutex>   // For thread safety if needed
 #include <iostream> // For cerr error output
+#include <sys/stat.h> // For file existence check
 
 #include "ceres/ceres.h" // Required for ceres::Solver::Summary
+
+
+// Helper function to check if a file exists
+bool fileExists(const std::string& filename) {
+    struct stat buffer;
+    return (stat(filename.c_str(), &buffer) == 0);
+}
 
 /**
  * @class CeresLogger
@@ -228,6 +236,16 @@ public:
             results_mode = std::ios::app;
             metrics_mode = std::ios::app;
              // std::cout << "Opening logs in APPEND mode for run entry." << std::endl; // Debug
+        }
+
+        // ★★★ Ensure files exist before opening ★★★
+        if (!fileExists(results_filename_)) {
+            std::ofstream temp_file(results_filename_);
+            temp_file.close();
+        }
+        if (!fileExists(metrics_filename_)) {
+            std::ofstream temp_file(metrics_filename_);
+            temp_file.close();
         }
 
         // Open files using the determined mode

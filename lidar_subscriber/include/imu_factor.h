@@ -28,18 +28,22 @@
                 // parameters[5] -> [Baj(3), Bgj(3)]
 
                 Eigen::Vector3d Pi(parameters[0][0], parameters[0][1], parameters[0][2]);
-                Eigen::Quaterniond Qi(parameters[0][3], parameters[0][4], parameters[0][5], parameters[0][6]);
+                Eigen::Quaterniond Qi(parameters[0][6], parameters[0][3], parameters[0][4], parameters[0][5]);
 
                 Eigen::Vector3d Vi(parameters[1][0], parameters[1][1], parameters[1][2]);
                 Eigen::Vector3d Bai(parameters[2][0], parameters[2][1], parameters[2][2]);
                 Eigen::Vector3d Bgi(parameters[2][3], parameters[2][4], parameters[2][5]);
 
                 Eigen::Vector3d Pj(parameters[3][0], parameters[3][1], parameters[3][2]);
-                Eigen::Quaterniond Qj(parameters[3][3], parameters[3][4], parameters[3][5], parameters[3][6]);
+                Eigen::Quaterniond Qj(parameters[3][6], parameters[3][3], parameters[3][4], parameters[3][5]);
 
                 Eigen::Vector3d Vj(parameters[4][0], parameters[4][1], parameters[4][2]);
                 Eigen::Vector3d Baj(parameters[5][0], parameters[5][1], parameters[5][2]);
                 Eigen::Vector3d Bgj(parameters[5][3], parameters[5][4], parameters[5][5]);
+
+                // // print out the parameters to check the quaternion order
+                // ROS_INFO_STREAM("Parameteres from 3: " << parameters[0][3] << ", " << parameters[0][4] << ", " << parameters[0][5] << ", " << parameters[0][6]);
+                // ROS_INFO_STREAM("Constructed Qi in wxyz order: " << Qi.w() << ", " << Qi.x() << ", " << Qi.y() << ", " << Qi.z());
 
                 Eigen::Map<Eigen::Matrix<double, 15, 1>> residual(residuals);
 
@@ -49,6 +53,7 @@
                 );
                 // ROS_INFO_STREAM("residual: " << residual.transpose());
                 Eigen::Matrix<double, 15, 15> sqrt_info = Eigen::LLT<Eigen::Matrix<double, 15, 15>>(preint->getCovariance().inverse()).matrixL().transpose();
+                // ROS_INFO_STREAM("sqrt_info: " << sqrt_info);
                 // sqrt_info = sqrt_info * 1e-2;
                 residual = sqrt_info * residual;  
                 // ROS_INFO_STREAM("sqrt_info * residual: " << residual.transpose());           
@@ -134,7 +139,7 @@
                         #if 0
                         J3.block<3, 3>(O_R, O_R) = Eigen::Matrix3d::Identity();
                         #else
-                        Eigen::Quaterniond corrected_delta_q = preint->getDeltaQ() * Utility::deltaQ(J_gamma_bg * (Bgi - preint->getBg()));
+                        Eigen::Quaterniond corrected_delta_q = (preint->getDeltaQ() * Utility::deltaQ(J_gamma_bg * (Bgi - preint->getBg()))).normalized();
                         J3.block<3, 3>(O_R, O_R) = Utility::Qleft(corrected_delta_q.inverse() * Qi.inverse() * Qj).bottomRightCorner<3, 3>();
                         #endif
 
