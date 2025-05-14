@@ -2912,17 +2912,17 @@ private:
                     // current_state_.orientation = q.normalized();
                 }
                 // Try to find IMU orientation if available
-                // sensor_msgs::Imu closest_imu = findClosestImuMeasurement(gps.timestamp);
-                // if (closest_imu.header.stamp.toSec() > 0 && 
-                //     closest_imu.orientation_covariance[0] != -1) {
-                //     current_state_.orientation = Eigen::Quaterniond(
-                //         closest_imu.orientation.w,
-                //         closest_imu.orientation.x,
-                //         closest_imu.orientation.y,
-                //         closest_imu.orientation.z
-                //     ).normalized();
-                //     ROS_INFO("Using IMU orientation for initialization");
-                // }
+                sensor_msgs::Imu closest_imu = findClosestImuMeasurement(gps.timestamp);
+                if (closest_imu.header.stamp.toSec() > 0 && 
+                    closest_imu.orientation_covariance[0] != -1) {
+                    current_state_.orientation = Eigen::Quaterniond(
+                        closest_imu.orientation.w,
+                        closest_imu.orientation.x,
+                        closest_imu.orientation.y,
+                        closest_imu.orientation.z
+                    ).normalized();
+                    ROS_INFO("Using IMU orientation for initialization");
+                }
             }
             
             // Use GPS velocity only if configured
@@ -3136,6 +3136,7 @@ private:
                 // get the olded state
                 State oldest_state = state_window_.front();
                 updateFinalPath(oldest_state);
+                logKeyframeBias(oldest_state);
 
                 state_window_.pop_front();
                 // add another track to show the optimized result
@@ -5134,9 +5135,13 @@ private:
 
             // // add variable number, for debug use
             // ROS_INFO("Optimizing %zu states", state_window_.size());
-            // // output the state window before optimization
-            // for (size_t i = 0; i < state_window_.size(); ++i) {
-            //     ROS_INFO("State %zu: [%.2f, %.2f, %.2f]", i, state_window_[i].position.x(), state_window_[i].position.y(), state_window_[i].position.z());
+            // // output the variables before optimization
+            // for(size_t i = 0; i < state_window_.size(); ++i) {
+            //     ROS_INFO("State %zu: Pos [%.2f, %.2f, %.2f] | Vel [%.2f, %.2f, %.2f] | Quat(xyzw) [%.2f, %.2f, %.2f, %.2f]",
+            //         i,
+            //         variables[i].pose[0], variables[i].pose[1], variables[i].pose[2],
+            //         variables[i].velocity[0], variables[i].velocity[1], variables[i].velocity[2],
+            //         variables[i].pose[3], variables[i].pose[4], variables[i].pose[5], variables[i].pose[6]);
             // }
             
             // Add pose parameterization
@@ -5166,8 +5171,11 @@ private:
                             // Add position factor
                             ceres::CostFunction* gps_pos_factor = GpsPositionFactor::Create(
                                 gps.position, gps_position_noise_);
+
+                            // Use HuberLoss for robustness
+                            ceres::LossFunction* loss_function = new ceres::HuberLoss(0.1);
                             
-                            problem.AddResidualBlock(gps_pos_factor, NULL, variables[i].pose);
+                            problem.AddResidualBlock(gps_pos_factor, loss_function, variables[i].pose);
                             // ROS_INFO("Add GPS position factor, keyframe_time=%.3f", keyframe_time);
                             // ROS_INFO("GPS position: [%.2f, %.2f, %.2f]", 
                             //         gps.position.x(), gps.position.y(), gps.position.z());
@@ -5299,16 +5307,16 @@ private:
                 }
             }
             
-            // CRITICAL: Add hard constraints on bias magnitude if bias estimation is enabled
-            if (enable_bias_estimation_) {
-                ROS_INFO("Added bias magnitude constraints");
-                for (size_t i = 0; i < state_window_.size(); ++i) {
-                    ceres::CostFunction* bias_constraint = BiasMagnitudeConstraint::Create(
-                        acc_bias_max_, gyro_bias_max_, bias_constraint_weight_);
+            // // CRITICAL: Add hard constraints on bias magnitude if bias estimation is enabled
+            // if (enable_bias_estimation_) {
+            //     ROS_INFO("Added bias magnitude constraints");
+            //     for (size_t i = 0; i < state_window_.size(); ++i) {
+            //         ceres::CostFunction* bias_constraint = BiasMagnitudeConstraint::Create(
+            //             acc_bias_max_, gyro_bias_max_, bias_constraint_weight_);
                     
-                    problem.AddResidualBlock(bias_constraint, nullptr, variables[i].bias);
-                }
-            }
+            //         problem.AddResidualBlock(bias_constraint, nullptr, variables[i].bias);
+            //     }
+            // }
             
             // IMPROVED: Add adaptive velocity magnitude constraints if enabled
             if (enable_velocity_constraint_) {
@@ -5414,9 +5422,10 @@ private:
             // options.linear_solver_type = ceres::SPARSE_NORMAL_CHOLESKY;
             options.linear_solver_type = ceres::SPARSE_SCHUR;
             // options.trust_region_strategy_type = ceres::DOGLEG;
+            // options.line_search_direction_type = ceres::LBFGS;
 
-            ROS_INFO("Optimization problem has %zu residuals and %zu parameter blocks",
-                    problem.NumResiduals(), problem.NumParameterBlocks());
+            // ROS_INFO("Optimization problem has %zu residuals and %zu parameter blocks",
+            //         problem.NumResiduals(), problem.NumParameterBlocks());
             // add output for debug use
             // options.minimizer_progress_to_stdout = false;
             options.minimizer_progress_to_stdout = true;
@@ -5425,6 +5434,41 @@ private:
             // // //compare with auto computed jacobian
             // options.check_gradients = true;
             // options.gradient_check_relative_precision = 1e-2;
+
+            // // print the initial residuals
+            // std::cout << "Evaluating initial residuals before optimization..." << std::endl;
+
+            // double initial_cost;
+            // std::vector<double> initial_residuals;
+            // ceres::Problem::EvaluateOptions eval_options;
+            // eval_options.apply_loss_function = false;
+
+            // std::vector<double*> parameter_block_ptrs;
+            // problem.GetParameterBlocks(&parameter_block_ptrs);
+            // eval_options.parameter_blocks = parameter_block_ptrs;
+
+
+            // if (!problem.Evaluate(eval_options, &initial_cost, &initial_residuals, nullptr, nullptr)) {
+            //     // nullptr 用于雅可比和梯度，因为我们这里只关心残差和代价
+            //     std::cerr << "ERROR: Problem::Evaluate() failed before optimization. "
+            //             << "Check problem construction and initial parameter values." << std::endl;
+            // } else {
+            //     std::cout << "Initial Cost (raw, 0.5 * sum(residuals^2)): " << initial_cost << std::endl;
+            //     std::cout << "Number of initial residuals: " << initial_residuals.size() << std::endl;
+            //     std::cout << "Initial Residuals:" << std::endl;
+            //     for (size_t i = 0; i < initial_residuals.size(); ++i) {
+            //         std::cout << "  residual[" << i << "] = " << initial_residuals[i] << std::endl;
+            //     }
+
+            //     // 如果你想看到 Ceres 在迭代 0 开始时会看到的 cost (即应用了损失函数)
+            //     eval_options.apply_loss_function = true;
+            //     double initial_cost_with_loss;
+            //     if (problem.Evaluate(eval_options, &initial_cost_with_loss, nullptr, nullptr, nullptr)) {
+            //         std::cout << "Initial Cost (with loss function, as in Solver iter 0): "
+            //                 << initial_cost_with_loss << std::endl;
+            //     }
+            // }
+            // std::cout << "--------------------------------------------------------" << std::endl;
             
             // Solve the optimization problem
             ceres::Solver::Summary summary;
@@ -5574,9 +5618,9 @@ private:
                     if (found_gps && min_time_diff < 1.0) {  // Within 1 second
                         double gps_vel_norm = closest_gps.velocity.norm();
                         double vel_diff = (current_state_.velocity - closest_gps.velocity).norm();
-                        ROS_INFO("velocity comparison: current_state_ [%.2f, %.2f, %.2f] m/s , closest_gps: [%.2f, %.2f, %.2f] m/s",
-                                 current_state_.velocity.x(), current_state_.velocity.y(), current_state_.velocity.z(),
-                                 closest_gps.velocity.x(), closest_gps.velocity.y(), closest_gps.velocity.z());
+                        // ROS_INFO("velocity comparison: current_state_ [%.2f, %.2f, %.2f] m/s , closest_gps: [%.2f, %.2f, %.2f] m/s",
+                        //          current_state_.velocity.x(), current_state_.velocity.y(), current_state_.velocity.z(),
+                        //          closest_gps.velocity.x(), closest_gps.velocity.y(), closest_gps.velocity.z());
                         //ROS_INFO("GPS velocity comparison: GPS [%.2f, %.2f, %.2f] m/s (%.1f km/h), diff: %.2f m/s (%.1f km/h)",
                         //         closest_gps.velocity.x(), closest_gps.velocity.y(), closest_gps.velocity.z(),
                         //         gps_vel_norm * 3.6, vel_diff, vel_diff * 3.6);

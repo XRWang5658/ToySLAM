@@ -4,6 +4,8 @@
          doc="Path for the optimization results log file (parameters). Empty generates default name." />
      <arg name="metrics_log_path" default="/home/xiangru/code/toyslam_ws/src/data/metrics.txt" 
          doc="Path for the optimization metrics log file (summary/computation). Empty generates default name." />
+     <arg name="bias_log_path" default="/home/xiangru/code/toyslam_ws/src/data/bias.txt" 
+         doc="Path for the optimization bias log file (summary/computation). Empty generates default name." />
 
      <!--Most Critical: Gravity Acc-->
      <arg name="gravity_magnitude" default="9.785" 
@@ -29,7 +31,7 @@
     
     <!-- CRITICAL: When true, GPS velocity is used to initialize velocity at each keyframe -->
     <!-- This is essential for stable velocity estimation -->
-    <arg name="use_gps_velocity" default="false" 
+    <arg name="use_gps_velocity" default="true" 
          doc="Use GPS velocity to initialize each keyframe. If enable_velocity_constraint is false, GPS velocity is only used for initialization, not as a constraint." />
 
     <!-- ============================== TOPIC NAMES ============================== -->
@@ -98,7 +100,7 @@
          doc="Number of keyframes to maintain in sliding window optimization. Larger windows provide better accuracy but slower performance." />
     <arg name="optimization_frequency" default="1" 
          doc="How often to run the optimizer (Hz). Higher values give more frequent updates but increase CPU usage." />
-    <arg name="max_iterations" default="20" 
+    <arg name="max_iterations" default="50" 
          doc="Maximum iterations for Ceres solver. Higher values may improve accuracy but increase computation time." />
     
     <!-- ============================== FEATURE CONFIGURATION ============================== -->
@@ -177,6 +179,7 @@
         <!-- Log file paths -->
           <param name="results_log_path" value="$(arg results_log_path)" />
           <param name="metrics_log_path" value="$(arg metrics_log_path)" />
+          <param name="bias_log_path" value="$(arg bias_log_path)" />
         
         <!-- Topic configuration -->
         <param name="imu_topic" value="$(arg imu_topic)" />

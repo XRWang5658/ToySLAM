@@ -52,7 +52,11 @@
                     Pj, Qj, Vj, Baj, Bgj
                 );
                 // ROS_INFO_STREAM("residual: " << residual.transpose());
-                Eigen::Matrix<double, 15, 15> sqrt_info = Eigen::LLT<Eigen::Matrix<double, 15, 15>>(preint->getCovariance().inverse()).matrixL().transpose();
+                // ROS_INFO_STREAM("Preint covariance: " << preint->getCovariance());
+                Eigen::Matrix<double, 15, 15> covariance = preint->getCovariance();
+                covariance += Eigen::Matrix<double, 15, 15>::Identity() * 1e-6; // 添加正则化项
+                Eigen::Matrix<double, 15, 15> sqrt_info = Eigen::LLT<Eigen::Matrix<double, 15, 15>>(covariance.inverse()).matrixL().transpose();
+                // Eigen::Matrix<double, 15, 15> sqrt_info = Eigen::LLT<Eigen::Matrix<double, 15, 15>>(preint->getCovariance().inverse()).matrixL().transpose();
                 // ROS_INFO_STREAM("sqrt_info: " << sqrt_info);
                 // sqrt_info = sqrt_info * 1e-2;
                 residual = sqrt_info * residual;  
@@ -140,7 +144,7 @@
                         J3.block<3, 3>(O_R, O_R) = Eigen::Matrix3d::Identity();
                         #else
                         Eigen::Quaterniond corrected_delta_q = (preint->getDeltaQ() * Utility::deltaQ(J_gamma_bg * (Bgi - preint->getBg()))).normalized();
-                        J3.block<3, 3>(O_R, O_R) = Utility::Qleft(corrected_delta_q.inverse() * Qi.inverse() * Qj).bottomRightCorner<3, 3>();
+                        J3.block<3, 3>(O_R, O_R) =  Utility::Qleft(corrected_delta_q.inverse() * Qi.inverse() * Qj).bottomRightCorner<3, 3>();
                         #endif
 
                         J3 = sqrt_info * J3;

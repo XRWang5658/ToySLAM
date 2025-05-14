@@ -47,8 +47,8 @@ public:
 
         sum_dt = 0.0;
         jacobian.setIdentity();
-        covariance.setZero();
-        // covariance = 1e-3 * covariance;
+        covariance.setIdentity();
+        covariance = 1e-8 * covariance;
 
         // set default gravity  
         set_gravity(9.785);
@@ -315,7 +315,8 @@ public:
         gyro_buf.clear();
 
         jacobian.setIdentity();
-        covariance.setZero();
+        covariance.setIdentity();
+        covariance = 1e-8 * covariance;
 
         sum_dt = 0.0;
 
