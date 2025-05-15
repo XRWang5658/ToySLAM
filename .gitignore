@@ -42,3 +42,6 @@ lidar_subscriber/CMakeLists.txt
 data/WeChatLinux_x86_64.deb
 lidar_subscriber/CMakeLists.txt
 lidar_subscriber/launch/uwb_imu_batch.launch
+data/imu_AccelerometerBias_3D_vector.png
+data/imu_GyroscopeBias_3D_vector.png
+data/bias.txt
