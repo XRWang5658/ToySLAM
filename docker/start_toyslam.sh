@@ -32,7 +32,7 @@
 		-e GDK_SCALE \
 		-e GDK_DPI_SCALE \
 		-v /tmp/.X11-unix:/tmp/.X11-unix \
-		-v $(realpath ../../../../ToySLAM):/root/toyslam_ws \
+		-v $(realpath ../../../../toyslam):/root/toyslam_ws \
 		docker_toyslam /bin/bash
 	
 #fi

@@ -1,7 +1,7 @@
-# ToySLAM: A ROS Package for 3D Point Cloud Registration using NDT for PolyU course AAE4011
+# toyslam: A ROS Package for 3D Point Cloud Registration using NDT for PolyU course AAE4011
 
 ## Overview
-**ToySLAM** is a lightweight ROS package for 3D point cloud registration using the Normal Distributions Transform (NDT) algorithm. Designed for educational purposes and experimentation, this package provides a modular pipeline to process, align, and visualize point clouds in real-time. It serves as a foundational framework for SLAM (Simultaneous Localization and Mapping) applications and can be extended for robotics or autonomous systems.
+**toyslam** is a lightweight ROS package for 3D point cloud registration using the Normal Distributions Transform (NDT) algorithm. Designed for educational purposes and experimentation, this package provides a modular pipeline to process, align, and visualize point clouds in real-time. It serves as a foundational framework for SLAM (Simultaneous Localization and Mapping) applications and can be extended for robotics or autonomous systems.
 
 [SLAM Dataset](https://www.dropbox.com/scl/fi/c9a4spcbqupvvcsacwbtf/2025-02-06-17-20-03.bag?rlkey=jkk60x2sn3awbcd5w1tx0mxgf&dl=0)
 
@@ -41,25 +41,25 @@
 1. Clone this repository into your ROS workspace:
    ```bash
    cd ~/catkin_ws/src
-   git clone https://github.com/weisongwen/ToySLAM
+   git clone https://github.com/weisongwen/toyslam
    catkin_make
-   rosrun ToySLAM  ndt_rosbag_mapping_node /home/wws/Download/UrbanNav-HK_Whampoa-20210521_sensors.bag
+   rosrun toyslam  ndt_rosbag_mapping_node /home/wws/Download/UrbanNav-HK_Whampoa-20210521_sensors.bag
    ```
 
 
 ## NEW updates for further extension (Optional)
 1. ```uwb_node.cpp```
     - simulate the UWB ranging measurements and do the positioning
-    - ```roslaunch ToySLAM fusion.launch ```
+    - ```roslaunch toyslam fusion.launch ```
 
 2. ```uwb_imu_node.cpp```
     - UWB/IMU fusion via sliding window optimization
-    - ```rosrun ToySLAM uwb_imu_node ```
+    - ```rosrun toyslam uwb_imu_node ```
 
 3. ```uwb_imu_sim_node.cpp```
     - UWB/IMU data simulation. Perform the least square estimation for UWB ranging measurements with visualization
-    - ```roslaunch ToySLAM uwb_imu_fusion_sim.launch ```
+    - ```roslaunch toyslam uwb_imu_fusion_sim.launch ```
 4. ```uwb_imu_EKF_node.cpp```
     - UWB/IMU fusion with EKF. The simulated IMU data is not correct, please use the dataset ```2025-02-06-16-30-08.bag```
-    - ```rosrun ToySLAM uwb_imu_EKF_node ```
+    - ```rosrun toyslam uwb_imu_EKF_node ```
     - ```rosbag play 2025-02-06-16-30-08.bag ```

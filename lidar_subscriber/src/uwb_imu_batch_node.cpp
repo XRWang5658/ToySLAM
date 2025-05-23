@@ -1346,7 +1346,7 @@ public:
         Eigen::Matrix<T, 3, 1> g = gravity_.cast<T>();
         // ROS_INFO("g: %f %f %f", g(0), g(1), g(2));
 
-        // Compute residuals
+        // Compute residuals //changed by Yixin
         Eigen::Map<Eigen::Matrix<T, 15, 1>> residual(residuals);
 
         // Position residual - in ENU frame, g is already negative in Z-direction
@@ -1414,6 +1414,7 @@ public:
     static ceres::CostFunction* Create(const ImuPreintegrationBetweenKeyframes& preint, 
                                       const Eigen::Vector3d& gravity,
                                       double bias_correction_threshold = 0.05) {
+        //yixin
         return new ceres::AutoDiffCostFunction<ImuFactor, 15, 7, 3, 6, 7, 3, 6>(
             new ImuFactor(preint, gravity, bias_correction_threshold));
     }
@@ -1524,7 +1525,7 @@ public:
         
         // NEW: Add feature configuration parameters
         private_nh.param<bool>("enable_roll_pitch_constraint", enable_roll_pitch_constraint_, true);
-        private_nh.param<bool>("enable_gravity_alignment_factor", enable_gravity_alignment_factor_, true); 
+
         private_nh.param<bool>("enable_orientation_smoothness_factor", enable_orientation_smoothness_factor_, true);
         private_nh.param<bool>("enable_velocity_constraint", enable_velocity_constraint_, true);
         private_nh.param<bool>("enable_horizontal_velocity_incentive", enable_horizontal_velocity_incentive_, true);
@@ -1621,7 +1622,7 @@ public:
             logger_.addMetadata("Config: Enable Bias Estimation", enable_bias_estimation_ ? "True" : "False");
             logger_.addMetadata("Config: Enable Marginalization", enable_marginalization_ ? "True" : "False");
             logger_.addMetadata("Config: Enable Roll/Pitch Constraint", enable_roll_pitch_constraint_ ? "True" : "False");
-            logger_.addMetadata("Config: Enable Gravity Alignment Factor", enable_gravity_alignment_factor_ ? "True" : "False");
+
             logger_.addMetadata("Config: Enable Orientation Smoothness Factor", enable_orientation_smoothness_factor_ ? "True" : "False");
             logger_.addMetadata("Config: Enable Velocity Constraint", enable_velocity_constraint_ ? "True" : "False");
             logger_.addMetadata("Config: Enable Horizontal Velocity Incentive", enable_horizontal_velocity_incentive_ ? "True" : "False");
@@ -1739,8 +1740,9 @@ public:
         // Log feature configuration status
         ROS_INFO("Feature configuration: roll_pitch=%s, gravity=%s, orientation_smooth=%s",
                  enable_roll_pitch_constraint_ ? "enabled" : "disabled",
-                 enable_gravity_alignment_factor_ ? "enabled" : "disabled",
                  enable_orientation_smoothness_factor_ ? "enabled" : "disabled");
+
+    
         ROS_INFO("Feature configuration: velocity=%s, horizontal_velocity=%s, imu_orientation=%s",
                  enable_velocity_constraint_ ? "enabled" : "disabled",
                  enable_horizontal_velocity_incentive_ ? "enabled" : "disabled",
@@ -1807,7 +1809,7 @@ private:
     visualization_msgs::MarkerArray velocity_error_markers_;
 
     // Store latest error statistics
-    struct ErrorStats {
+     struct ErrorStats {
         double position_error_e = 0.0;
         double position_error_n = 0.0;
         double position_error_u = 0.0;
@@ -1850,7 +1852,7 @@ private:
     
     // Feature configuration parameters
     bool enable_roll_pitch_constraint_;
-    bool enable_gravity_alignment_factor_;
+
     bool enable_orientation_smoothness_factor_;
     bool enable_velocity_constraint_;
     bool enable_horizontal_velocity_incentive_;
@@ -3318,26 +3320,26 @@ private:
         return closest_imu;
     }
 
-    // Helper to add IMU orientation factor
-    void addImuOrientationFactor(ceres::Problem& problem, 
-                               double* pose_param, 
-                               const sensor_msgs::Imu& imu_msg) {
-        // Create quaternion from IMU message
-        Eigen::Quaterniond q_imu(
-            imu_msg.orientation.w,
-            imu_msg.orientation.x,
-            imu_msg.orientation.y,
-            imu_msg.orientation.z
-        );
+    // // Helper to add IMU orientation factor
+    // void addImuOrientationFactor(ceres::Problem& problem, 
+    //                            double* pose_param, 
+    //                            const sensor_msgs::Imu& imu_msg) {
+    //     // Create quaternion from IMU message
+    //     Eigen::Quaterniond q_imu(
+    //         imu_msg.orientation.w,
+    //         imu_msg.orientation.x,
+    //         imu_msg.orientation.y,
+    //         imu_msg.orientation.z
+    //     );
         
-        // Ensure quaternion is normalized
-        q_imu.normalize();
+    //     // Ensure quaternion is normalized
+    //     q_imu.normalize();
         
-        // Only constrain yaw rotation
-        ceres::CostFunction* yaw_factor = 
-            YawOnlyOrientationFactor::Create(q_imu, imu_orientation_weight_);
-        problem.AddResidualBlock(yaw_factor, nullptr, pose_param);
-    }
+    //     // Only constrain yaw rotation
+    //     ceres::CostFunction* yaw_factor = 
+    //         YawOnlyOrientationFactor::Create(q_imu, imu_orientation_weight_);
+    //     problem.AddResidualBlock(yaw_factor, nullptr, pose_param);
+    // }
 
     // Check if bias values are within reasonable limits
     bool areBiasesReasonable(const Eigen::Vector3d& acc_bias, const Eigen::Vector3d& gyro_bias) {
@@ -4001,25 +4003,9 @@ private:
                     marginalization_info->addResidualBlockInfo(residual_info);
                 }
                 
-                // Add gravity alignment factor if IMU data is available and enabled
-                sensor_msgs::Imu closest_imu = findClosestImuMeasurement(oldest_state.timestamp);
-                if (enable_gravity_alignment_factor_ && closest_imu.header.stamp.toSec() > 0) {
-                    Eigen::Vector3d acc(closest_imu.linear_acceleration.x,
-                                       closest_imu.linear_acceleration.y,
-                                       closest_imu.linear_acceleration.z);
-                    
-                    // Apply bias correction
-                    acc -= oldest_state.acc_bias;
-                    
-                    ceres::CostFunction* gravity_factor = GravityAlignmentFactor::Create(acc, gravity_alignment_weight_);
-                    std::vector<double*> parameter_blocks = {pose_param1};
-                    std::vector<int> drop_set = {0}; // Drop the pose parameter
-                    
-                    auto* residual_info = new MarginalizationInfo::ResidualBlockInfo(
-                        gravity_factor, nullptr, parameter_blocks, drop_set);
-                    marginalization_info->addResidualBlockInfo(residual_info);
-                }
                 
+                sensor_msgs::Imu closest_imu = findClosestImuMeasurement(oldest_state.timestamp);
+               
                 // If IMU has orientation and orientation factor is enabled, add yaw-only factor
                 if (enable_imu_orientation_factor_ && closest_imu.header.stamp.toSec() > 0 &&
                     closest_imu.orientation_covariance[0] != -1) {
@@ -4595,19 +4581,22 @@ private:
                     Eigen::Vector3d acc_int_frame1 = delta_q_half * acc_without_gravity1;
                     Eigen::Vector3d acc_int_frame2 = delta_q_half * acc_without_gravity2;
 
-                    Eigen::Vector3d acc_int_frame1_ = delta_q_half.inverse() * acc_step1;
-                    Eigen::Vector3d acc_int_frame2_ = delta_q_half.inverse() * acc_step2;
+                    // Eigen::Vector3d acc_int_frame1_ = delta_q_half.inverse() * acc_step1;
+                    // Eigen::Vector3d acc_int_frame2_ = delta_q_half.inverse() * acc_step2;
                     
                     // Integrate velocity using midpoint rule
                     Eigen::Vector3d acc_integrated = (acc_int_frame1 + acc_int_frame2) * 0.5;
-                    Eigen::Vector3d acc_integrated_ = (acc_int_frame1_ + acc_int_frame2_) * 0.5;
+                    // Eigen::Vector3d acc_integrated_ = (acc_int_frame1_ + acc_int_frame2_) * 0.5;
                     Eigen::Vector3d vel_old = preint.delta_velocity;
-                    preint.delta_velocity += acc_integrated_ * step_dt;
+                    preint.delta_velocity += acc_integrated * step_dt;
+                    // preint.delta_velocity += acc_integrated_ * step_dt;
                     
                     // Integrate position using midpoint rule with current velocity
-                    Eigen::Vector3d vel_midpoint = preint.delta_velocity - 0.5 * acc_integrated_ * step_dt;
+                    Eigen::Vector3d vel_midpoint = preint.delta_velocity - 0.5 * acc_integrated * step_dt;
+                    // Eigen::Vector3d vel_midpoint = preint.delta_velocity - 0.5 * acc_integrated_ * step_dt;
                     // preint.delta_position += vel_midpoint * step_dt;
-                    preint.delta_position += vel_old * step_dt + 0.5 * acc_integrated_ * step_dt * step_dt;
+                    preint.delta_position += vel_old * step_dt + 0.5 * acc_integrated * step_dt * step_dt;
+                    // preint.delta_position += vel_old * step_dt + 0.5 * acc_integrated_ * step_dt * step_dt;
 
                     // Update covariance and Jacobians
                     // Calculate Jacobians for noise propagation
@@ -5191,7 +5180,8 @@ private:
                             //         keyframe_time, residuals[0], residuals[1], residuals[2]);
                             
                             // Add velocity factor if configured to use GPS velocity
-                            if (use_gps_velocity_ && enable_velocity_constraint_) {
+                            //&& enable_velocity_constraint_
+                            if (use_gps_velocity_) {
                                 ceres::CostFunction* gps_vel_factor = GpsVelocityFactor::Create(
                                     gps.velocity, gps_velocity_noise_);
                                 
@@ -5199,13 +5189,13 @@ private:
                                 std::cout<<"Add velocity factor if configured to use GPS velocity---------------------------\n";
                             }
                             
-                            // Add orientation factor if configured to use GPS orientation as constraint
-                            if (use_gps_orientation_as_constraint_) {
-                                ceres::CostFunction* orientation_factor = GpsOrientationFactor::Create(
-                                    gps.orientation, gps_orientation_noise_);
+                            // // Add orientation factor if configured to use GPS orientation as constraint
+                            // if (use_gps_orientation_as_constraint_) {
+                            //     ceres::CostFunction* orientation_factor = GpsOrientationFactor::Create(
+                            //         gps.orientation, gps_orientation_noise_);
                                 
-                                problem.AddResidualBlock(orientation_factor, NULL, variables[i].pose);
-                            }
+                            //     problem.AddResidualBlock(orientation_factor, NULL, variables[i].pose);
+                            // }
                             
                             break;
                         }
@@ -5240,30 +5230,6 @@ private:
                 }
             }
             
-            // Add gravity alignment factors if enabled
-            if (enable_gravity_alignment_factor_) {
-                ROS_INFO("Added gravity alignment factors");
-                for (size_t i = 0; i < state_window_.size(); ++i) {
-                    double keyframe_time = state_window_[i].timestamp;
-                    
-                    // Find IMU measurement closest to this keyframe
-                    sensor_msgs::Imu closest_imu = findClosestImuMeasurement(keyframe_time);
-                    
-                    if (closest_imu.header.stamp.toSec() > 0) {
-                        Eigen::Vector3d acc(closest_imu.linear_acceleration.x, 
-                                         closest_imu.linear_acceleration.y, 
-                                         closest_imu.linear_acceleration.z);
-                        
-                        // Apply bias correction
-                        acc -= state_window_[i].acc_bias;
-                        
-                        ceres::CostFunction* gravity_factor = 
-                            GravityAlignmentFactor::Create(acc, gravity_alignment_weight_);
-                        
-                        problem.AddResidualBlock(gravity_factor, nullptr, variables[i].pose);
-                    }
-                }
-            }
             
             // Add orientation smoothness constraints between consecutive keyframes if enabled
             if (enable_orientation_smoothness_factor_) {
@@ -5286,26 +5252,26 @@ private:
                 }
             }
             
-            // Add IMU orientation factors if enabled
-            if (enable_imu_orientation_factor_) {
-                ROS_INFO("Added IMU orientation factors");
-                for (size_t i = 0; i < state_window_.size(); ++i) {
-                    double keyframe_time = state_window_[i].timestamp;
+            // // Add IMU orientation factors if enabled
+            // if (enable_imu_orientation_factor_) {
+            //     ROS_INFO("Added IMU orientation factors");
+            //     for (size_t i = 0; i < state_window_.size(); ++i) {
+            //         double keyframe_time = state_window_[i].timestamp;
                     
-                    // Find IMU measurement closest to this keyframe
-                    sensor_msgs::Imu closest_imu = findClosestImuMeasurement(keyframe_time);
+            //         // Find IMU measurement closest to this keyframe
+            //         sensor_msgs::Imu closest_imu = findClosestImuMeasurement(keyframe_time);
                     
-                    // If valid IMU orientation, add orientation factor
-                    if (closest_imu.header.stamp.toSec() > 0 && 
-                        closest_imu.orientation_covariance[0] != -1) {
+            //         // If valid IMU orientation, add orientation factor
+            //         if (closest_imu.header.stamp.toSec() > 0 && 
+            //             closest_imu.orientation_covariance[0] != -1) {
                         
-                        double time_diff = std::abs(closest_imu.header.stamp.toSec() - keyframe_time);
-                        if (time_diff < 0.05) { // 50ms threshold
-                            addImuOrientationFactor(problem, variables[i].pose, closest_imu);
-                        }
-                    }
-                }
-            }
+            //             double time_diff = std::abs(closest_imu.header.stamp.toSec() - keyframe_time);
+            //             if (time_diff < 0.05) { // 50ms threshold
+            //                 addImuOrientationFactor(problem, variables[i].pose, closest_imu);
+            //             }
+            //         }
+            //     }
+            // }
             
             // // CRITICAL: Add hard constraints on bias magnitude if bias estimation is enabled
             // if (enable_bias_estimation_) {
@@ -5318,31 +5284,31 @@ private:
             //     }
             // }
             
-            // IMPROVED: Add adaptive velocity magnitude constraints if enabled
-            if (enable_velocity_constraint_) {
-                ROS_INFO("Added adaptive velocity magnitude constraints");
-                // Estimate max velocity from IMU data for adaptive constraints
-                double adaptive_max_velocity = max_velocity_;
-                if (imu_buffer_.size() > 10) {
-                    adaptive_max_velocity = estimateMaxVelocityFromImu();
-                }
+            // // IMPROVED: Add adaptive velocity magnitude constraints if enabled
+            // if (enable_velocity_constraint_) {
+            //     ROS_INFO("Added adaptive velocity magnitude constraints");
+            //     // Estimate max velocity from IMU data for adaptive constraints
+            //     double adaptive_max_velocity = max_velocity_;
+            //     if (imu_buffer_.size() > 10) {
+            //         adaptive_max_velocity = estimateMaxVelocityFromImu();
+            //     }
                 
-                for (size_t i = 0; i < state_window_.size(); ++i) {
-                    ceres::CostFunction* velocity_constraint = VelocityMagnitudeConstraint::Create(
-                        adaptive_max_velocity, velocity_constraint_weight_);
-                    problem.AddResidualBlock(velocity_constraint, nullptr, variables[i].velocity);
-                }
-            }
+            //     for (size_t i = 0; i < state_window_.size(); ++i) {
+            //         ceres::CostFunction* velocity_constraint = VelocityMagnitudeConstraint::Create(
+            //             adaptive_max_velocity, velocity_constraint_weight_);
+            //         problem.AddResidualBlock(velocity_constraint, nullptr, variables[i].velocity);
+            //     }
+            // }
             
-            // FIXED: Add horizontal velocity incentive factors that only enforce minimum magnitude
-            if (enable_horizontal_velocity_incentive_) {
-                ROS_INFO("Added horizontal velocity incentive factors");
-                for (size_t i = 0; i < state_window_.size(); ++i) {
-                    ceres::CostFunction* h_vel_incentive = HorizontalVelocityIncentiveFactor::Create(
-                        min_horizontal_velocity_, horizontal_velocity_weight_);
-                    problem.AddResidualBlock(h_vel_incentive, nullptr, variables[i].velocity, variables[i].pose);
-                }
-            }
+            // // FIXED: Add horizontal velocity incentive factors that only enforce minimum magnitude
+            // if (enable_horizontal_velocity_incentive_) {
+            //     ROS_INFO("Added horizontal velocity incentive factors");
+            //     for (size_t i = 0; i < state_window_.size(); ++i) {
+            //         ceres::CostFunction* h_vel_incentive = HorizontalVelocityIncentiveFactor::Create(
+            //             min_horizontal_velocity_, horizontal_velocity_weight_);
+            //         problem.AddResidualBlock(h_vel_incentive, nullptr, variables[i].velocity, variables[i].pose);
+            //     }
+            // }
             
             // Add IMU pre-integration factors between keyframes
             for (size_t i = 0; i < state_window_.size() - 1; ++i) {
@@ -5388,11 +5354,11 @@ private:
                     //         variables[i+1].pose[3], variables[i+1].pose[4], variables[i+1].pose[5], variables[i+1].pose[6]);
 
                     // 计算初始 residual
-                    double residuals[15]; 
+                    double residuals[15]; // 16 residuals for IMU factor Yixn
                     double* parameters[6] = {variables[i].pose, variables[i].velocity, variables[i].bias,
                                             variables[i+1].pose, variables[i+1].velocity, variables[i+1].bias};
-                    // imu_factor_->Evaluate(parameters, residuals, nullptr);
-                    // // 打印所有初始的residual
+                     imu_factor_->Evaluate(parameters, residuals, nullptr);
+                    // // 打印所有初始的residual Yixin
                     // for (size_t j = 0; j < 15; ++j) {
                     //     ROS_INFO("Initial Residuals for IMU factor [%zu]: %.6f", j, residuals[j]);
                     // }
@@ -5476,7 +5442,7 @@ private:
             logger_.setSummary(summary);
             
             if (!summary.IsSolutionUsable()) {
-                ROS_WARN("Optimization failed or solution not usable. Report:\n%s", summary.FullReport().c_str());
+               // ROS_WARN("Optimization failed or solution not usable. Report:\n%s", summary.FullReport().c_str());
                  logger_.addMetadata("Optimization Status", "Failed - Solution Unusable");
                  logger_.log(); // ★ Attempt to log partial dynamic info + summary on failure ★
                  // Restore original settings before returning
@@ -5502,10 +5468,11 @@ private:
 
             // std::cout << summary.FullReport() << std::endl;
 
-            // // output the state window after optimization
-            // for (size_t i = 0; i < variables.size(); ++i) {
+            // output the state window after optimization
+            for (size_t i = 0; i < variables.size(); ++i) {
             //     ROS_INFO("Optimized state %zu: [%.2f, %.2f, %.2f]", i, variables[i].pose[0], variables[i].pose[1], variables[i].pose[2]);
-            // }
+            ROS_INFO("Optimized state velocity %zu: [%.2f, %.2f, %.2f]", i, variables[i].velocity[0], variables[i].velocity[1], variables[i].velocity[2]);
+            }
                 
             
             // Update state with optimized values

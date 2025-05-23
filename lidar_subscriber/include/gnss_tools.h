@@ -10,7 +10,7 @@
 
 #ifndef GNSS_Tools_HPP
 #define GNSS_Tools_HPP
-#include <nlosExclusion/GNSS_Raw_Array.h>
+#include <nlosexclusion/GNSS_Raw_Array.h>
 // google implements commandline flags processing.
 #include <gflags/gflags.h>
 // google loging tools
@@ -31,11 +31,11 @@ using namespace Eigen;
 struct DDMeasurement
 {
     /* the master satellite is found from user end*/
-    nlosExclusion::GNSS_Raw u_master_SV;
-    nlosExclusion::GNSS_Raw u_iSV;
+    nlosexclusion::GNSS_Raw u_master_SV;
+    nlosexclusion::GNSS_Raw u_iSV;
 
-    nlosExclusion::GNSS_Raw r_master_SV;
-    nlosExclusion::GNSS_Raw r_iSV;
+    nlosexclusion::GNSS_Raw r_master_SV;
+    nlosexclusion::GNSS_Raw r_iSV;
 
     double var_pr;
     double var_cp;
@@ -83,7 +83,7 @@ Eigen::Vector3d getXYZ_error(Eigen::MatrixXd est, Eigen::MatrixXd refSat, std::s
     return xyz_error;
 }
 
- Eigen::MatrixXd getAllPositions(nlosExclusion::GNSS_Raw_Array GNSS_data)
+ Eigen::MatrixXd getAllPositions(nlosexclusion::GNSS_Raw_Array GNSS_data)
 {
   Eigen::MatrixXd eAllSVPositions; // satellite positions   
   eAllSVPositions.resize(GNSS_data.GNSS_Raws.size(), 4);
@@ -97,7 +97,7 @@ Eigen::Vector3d getXYZ_error(Eigen::MatrixXd est, Eigen::MatrixXd refSat, std::s
   return eAllSVPositions;
 }
 
-Eigen::MatrixXd getAllMeasurements(nlosExclusion::GNSS_Raw_Array GNSS_data)
+Eigen::MatrixXd getAllMeasurements(nlosexclusion::GNSS_Raw_Array GNSS_data)
 {
   Eigen::MatrixXd eAllMeasurement; // pseudorange measurements 
   eAllMeasurement.resize(GNSS_data.GNSS_Raws.size(), 3);
@@ -115,7 +115,7 @@ function: check GNSS availability
 input: GNSS data
 output: bool 
 */
-bool checkAvailability(nlosExclusion::GNSS_Raw_Array GNSS_data) //
+bool checkAvailability(nlosexclusion::GNSS_Raw_Array GNSS_data) //
 {
   bool result = true;
   if(validateSV(getGPSCnt(GNSS_data), getBeiDouCnt(GNSS_data)) && (checkRepeating(GNSS_data)))
@@ -128,7 +128,7 @@ bool checkAvailability(nlosExclusion::GNSS_Raw_Array GNSS_data) //
   }
 }
 
-int getBeiDouCnt(nlosExclusion::GNSS_Raw_Array GNSS_data)
+int getBeiDouCnt(nlosexclusion::GNSS_Raw_Array GNSS_data)
 {
   int cnt = 0; 
   for(int i =0; i < GNSS_data.GNSS_Raws.size(); i++)
@@ -141,7 +141,7 @@ int getBeiDouCnt(nlosExclusion::GNSS_Raw_Array GNSS_data)
   return cnt;
 }
 
-int getGPSCnt(nlosExclusion::GNSS_Raw_Array GNSS_data)
+int getGPSCnt(nlosexclusion::GNSS_Raw_Array GNSS_data)
 {
   int cnt = 0; 
   for(int i =0; i < GNSS_data.GNSS_Raws.size(); i++)
@@ -172,10 +172,10 @@ bool validateSV(int gpsCnt, int BeidouCnt)
   }
 }
 
-bool checkRepeating(nlosExclusion::GNSS_Raw_Array GNSS_data) 
+bool checkRepeating(nlosexclusion::GNSS_Raw_Array GNSS_data) 
 {
   std::vector<int> satList;
-  nlosExclusion::GNSS_Raw_Array GNSS_dataTmp;
+  nlosexclusion::GNSS_Raw_Array GNSS_dataTmp;
   satList.clear();
   for(int i =0; i < GNSS_data.GNSS_Raws.size(); i++) // 
   {
@@ -190,10 +190,10 @@ bool checkRepeating(nlosExclusion::GNSS_Raw_Array GNSS_data)
   return true;
 }
 
-void removeRepeatedSV(nlosExclusion::GNSS_Raw_Array &GNSS_data) 
+void removeRepeatedSV(nlosexclusion::GNSS_Raw_Array &GNSS_data) 
 {
   std::vector<int> satList;
-  nlosExclusion::GNSS_Raw_Array GNSS_dataTmp;
+  nlosexclusion::GNSS_Raw_Array GNSS_dataTmp;
   satList.clear();
   for(int i =0; i < GNSS_data.GNSS_Raws.size(); i++) // 
   {
@@ -619,7 +619,7 @@ Eigen::MatrixXd enu2ecef(Eigen::MatrixXd originllh, Eigen::MatrixXd enu) // tran
    * @return eWLSSolution 5 unknowns with two clock bias variables
    @ 
   */
-  Eigen::MatrixXd WeightedLeastSquare(Eigen::MatrixXd eAllSVPositions, Eigen::MatrixXd eAllMeasurement, nlosExclusion::GNSS_Raw_Array GNSS_data, std::string method){
+  Eigen::MatrixXd WeightedLeastSquare(Eigen::MatrixXd eAllSVPositions, Eigen::MatrixXd eAllMeasurement, nlosexclusion::GNSS_Raw_Array GNSS_data, std::string method){
   
     Eigen::MatrixXd eWLSSolution;
     eWLSSolution.resize(5, 1);
@@ -818,7 +818,7 @@ Eigen::MatrixXd enu2ecef(Eigen::MatrixXd originllh, Eigen::MatrixXd enu) // tran
 
     return eWLSSolution;
   }
-  Eigen::MatrixXd WeightedLeastSquare_dk(Eigen::MatrixXd eAllSVPositions, Eigen::MatrixXd eAllMeasurement, nlosExclusion::GNSS_Raw_Array GNSS_data, std::string method){
+  Eigen::MatrixXd WeightedLeastSquare_dk(Eigen::MatrixXd eAllSVPositions, Eigen::MatrixXd eAllMeasurement, nlosexclusion::GNSS_Raw_Array GNSS_data, std::string method){
 
         Eigen::MatrixXd eWLSSolution;
         eWLSSolution.resize(6, 1);
@@ -1031,7 +1031,7 @@ Eigen::MatrixXd enu2ecef(Eigen::MatrixXd originllh, Eigen::MatrixXd enu) // tran
         return eWLSSolution;
     }
 
-  Eigen::MatrixXd getPseudorangeResidual(Eigen::MatrixXd eWLSSolution, nlosExclusion::GNSS_Raw_Array GNSS_data)
+  Eigen::MatrixXd getPseudorangeResidual(Eigen::MatrixXd eWLSSolution, nlosexclusion::GNSS_Raw_Array GNSS_data)
   {
     Eigen::MatrixXd eWLSSolutionResidual;
     eWLSSolutionResidual.resize(GNSS_data.GNSS_Raws.size(),1);
@@ -1135,11 +1135,11 @@ Eigen::MatrixXd enu2ecef(Eigen::MatrixXd originllh, Eigen::MatrixXd enu) // tran
 
   /**
    * @brief covariance estimation
-   * @param nlosExclusion::GNSS_Raw_Array GNSS_data
+   * @param nlosexclusion::GNSS_Raw_Array GNSS_data
    * @return weight_matrix
    @ 
    */
-  Eigen::MatrixXd cofactorMatrixCal_WLS(nlosExclusion::GNSS_Raw_Array GNSS_data, std::string method)
+  Eigen::MatrixXd cofactorMatrixCal_WLS(nlosexclusion::GNSS_Raw_Array GNSS_data, std::string method)
   {
     Eigen::Matrix<double,4,1> parameters;
     parameters<<50.0, 30.0, 30.0, 10.0; // loosely coupled 
@@ -1186,7 +1186,7 @@ Eigen::MatrixXd enu2ecef(Eigen::MatrixXd originllh, Eigen::MatrixXd enu) // tran
 
   /**
    * @brief covariance estimation
-   * @param nlosExclusion::GNSS_Raw_Array GNSS_data
+   * @param nlosexclusion::GNSS_Raw_Array GNSS_data
    * @return weight_matrix
    @ 
    */
@@ -1212,11 +1212,11 @@ Eigen::MatrixXd enu2ecef(Eigen::MatrixXd originllh, Eigen::MatrixXd enu) // tran
 
     /**
    * @brief covariance estimation for R-WLS
-   * @param nlosExclusion::GNSS_Raw_Array GNSS_data
+   * @param nlosexclusion::GNSS_Raw_Array GNSS_data
    * @return weight_matrix
    @ 
    */
-  Eigen::MatrixXd cofactorMatrixCal_R_WLS(nlosExclusion::GNSS_Raw_Array GNSS_data, std::string method)
+  Eigen::MatrixXd cofactorMatrixCal_R_WLS(nlosexclusion::GNSS_Raw_Array GNSS_data, std::string method)
   {
     Eigen::Matrix<double,4,1> parameters;
     double factor = 0.75;
@@ -1279,7 +1279,7 @@ Eigen::MatrixXd enu2ecef(Eigen::MatrixXd originllh, Eigen::MatrixXd enu) // tran
    * @return eWLSSolution 5 unknowns with two clock bias variables
    @ 
   */
-  Eigen::MatrixXd WeightedLeastSquare_GPS(Eigen::MatrixXd eAllSVPositions, Eigen::MatrixXd eAllMeasurement, nlosExclusion::GNSS_Raw_Array GNSS_data){
+  Eigen::MatrixXd WeightedLeastSquare_GPS(Eigen::MatrixXd eAllSVPositions, Eigen::MatrixXd eAllMeasurement, nlosexclusion::GNSS_Raw_Array GNSS_data){
   
     Eigen::MatrixXd eWLSSolution;
     eWLSSolution.resize(4, 1);
@@ -1449,7 +1449,7 @@ Eigen::MatrixXd enu2ecef(Eigen::MatrixXd originllh, Eigen::MatrixXd enu) // tran
    * @return covariance matrix for the estimated states
    @ 
   */
-  Eigen::MatrixXd getCovarianceMatrix(Eigen::MatrixXd eAllSVPositions, Eigen::MatrixXd eAllMeasurement, nlosExclusion::GNSS_Raw_Array GNSS_data, std::string method){
+  Eigen::MatrixXd getCovarianceMatrix(Eigen::MatrixXd eAllSVPositions, Eigen::MatrixXd eAllMeasurement, nlosexclusion::GNSS_Raw_Array GNSS_data, std::string method){
   
     Eigen::MatrixXd eWLSSolution;
     eWLSSolution.resize(5, 1);
@@ -1841,7 +1841,7 @@ Eigen::MatrixXd enu2ecef(Eigen::MatrixXd originllh, Eigen::MatrixXd enu) // tran
   }
 
   /* get variance for carrier-phase from a single satellite based on elevation/SNR */
-  double getVarofCp_ele_SNR(nlosExclusion::GNSS_Raw single_sat_data)
+  double getVarofCp_ele_SNR(nlosexclusion::GNSS_Raw single_sat_data)
   {
     Eigen::Matrix<double,4,1> parameters;
     parameters<<50.0, 30.0, 30.0, 10.0; // loosely coupled 
@@ -1891,7 +1891,7 @@ Eigen::MatrixXd enu2ecef(Eigen::MatrixXd originllh, Eigen::MatrixXd enu) // tran
   }
 
     /* get variance for pseudorange from a single satellite based on elevation/SNR */
-  double getVarofpr_ele_SNR(nlosExclusion::GNSS_Raw single_sat_data)
+  double getVarofpr_ele_SNR(nlosexclusion::GNSS_Raw single_sat_data)
   {
     Eigen::Matrix<double,4,1> parameters;
     parameters<<50.0, 30.0, 30.0, 10.0; // loosely coupled 

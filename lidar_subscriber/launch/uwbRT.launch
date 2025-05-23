@@ -1,6 +1,6 @@
 <launch>
   <!-- Launch GPS Satellite Signal Simulator Node -->
-  <node name="RangingRC" pkg="ToySLAM" type="RangingRC" output="screen">
+  <node name="RangingRC" pkg="toyslam" type="RangingRC" output="screen">
     <!-- Simulation parameters -->
     <param name="max_signal_distance" value="25000000.0"/>
     <param name="min_cn0_threshold" value="20.0"/>
@@ -43,5 +43,5 @@
   </node>
   
   <!-- Launch RViz with configuration -->
-  <node name="rviz" pkg="rviz" type="rviz" args="-d $(find ToySLAM)/rviz/uwb_ray_tracer.rviz"/>
+  <node name="rviz" pkg="rviz" type="rviz" args="-d $(find toyslam)/rviz/uwb_ray_tracer.rviz"/>
 </launch>

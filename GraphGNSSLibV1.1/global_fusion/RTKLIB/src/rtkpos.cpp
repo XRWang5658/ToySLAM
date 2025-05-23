@@ -64,8 +64,8 @@
 #include <novatel_msgs/BESTPOS.h> // novatel_msgs/INSPVAX
 
 #include <std_msgs/Float32MultiArray.h>
-#include <nlosExclusion/GNSS_Raw_Array.h>
-#include <nlosExclusion/GNSS_Raw.h>
+#include <nlosexclusion/GNSS_Raw_Array.h>
+#include <nlosexclusion/GNSS_Raw.h>
 #include "../../include/gnss_tools.h"
 
 static const char rcsid[]="$Id:$";
@@ -146,7 +146,7 @@ extern void rtkposRegisterPub(ros::NodeHandle &n)
 //    pub_rtkpos_odometry_float = n.advertise<nav_msgs::Odometry>("ENUFloatRTK", 1000); // rtk_float_odometry
     pub_rtkpos_odometry_solution = n.advertise<nav_msgs::Odometry>("ECEFSolutionRTK", 1000); // rtk_float_odometry
     pub_rtkpos_odometry_integer = n.advertise<nav_msgs::Odometry>("ENUIntegerRTK", 1000); //rtk_integer_odometry
-    pub_station_raw = n.advertise<nlosExclusion::GNSS_Raw_Array>("GNSSPsrCarStation1", 1000);
+    pub_station_raw = n.advertise<nlosexclusion::GNSS_Raw_Array>("GNSSPsrCarStation1", 1000);
 }
 
 /* open solution status file ---------------------------------------------------
@@ -1629,7 +1629,7 @@ static int relpos(rtk_t *rtk, const obsd_t *obs, int nu, int nr,
     time2epoch(obs[nu].time, epoch_time);
 
     #if 0
-    nlosExclusion::GNSS_Raw_Array gnss_data; // station data to be published
+    nlosexclusion::GNSS_Raw_Array gnss_data; // station data to be published
     int current_week;
     double current_tow;
     current_tow = time2gpst(obs[nu].time, &current_week);
@@ -1655,7 +1655,7 @@ static int relpos(rtk_t *rtk, const obsd_t *obs, int nu, int nr,
         /* tranverse observation measurements*/
         // if(is>=nu)
         {
-            nlosExclusion::GNSS_Raw gnss_raw;
+            nlosexclusion::GNSS_Raw gnss_raw;
             gnss_raw.GNSS_time = current_tow;
             gnss_raw.total_sv = float(ns); // same satellite with user end
             gnss_raw.prn_satellites_index = float(obs[ir[is]].sat);
@@ -1689,7 +1689,7 @@ static int relpos(rtk_t *rtk, const obsd_t *obs, int nu, int nr,
     // rtk->ssat[sat-1].slip[f]
 
     #if 1
-    nlosExclusion::GNSS_Raw_Array gnss_data; // station data to be published
+    nlosexclusion::GNSS_Raw_Array gnss_data; // station data to be published
     int current_week = 0;
     double current_tow;
     current_tow = time2gpst(obs[nu].time, &current_week);
@@ -1715,7 +1715,7 @@ static int relpos(rtk_t *rtk, const obsd_t *obs, int nu, int nr,
         /* tranverse observation measurements*/
         // if(is>=nu)
         {
-            nlosExclusion::GNSS_Raw gnss_raw;
+            nlosexclusion::GNSS_Raw gnss_raw;
             gnss_raw.GNSS_time = current_tow;
             gnss_raw.GNSS_week = current_week;
             gnss_raw.total_sv = float(ns); // same satellite with user end
@@ -1767,7 +1767,7 @@ static int relpos(rtk_t *rtk, const obsd_t *obs, int nu, int nr,
             // if(gnss_raw.raw_pseudorange> 1000)
             gnss_data.GNSS_Raws.push_back(gnss_raw);
 
-            nlosExclusion::GNSS_Raw_mf gnss_raw_mf;
+            nlosexclusion::GNSS_Raw_mf gnss_raw_mf;
             gnss_raw_mf.GNSS_week = current_week;
             gnss_raw_mf.GNSS_time = current_tow;
             gnss_raw_mf.total_sv = float(ns); // same satellite with user end
