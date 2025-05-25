@@ -44,8 +44,8 @@
 #include <novatel_msgs/BESTPOS.h> // novatel_msgs/INSPVAX
 
 #include "../../include/gnss_tools.h"
-#include <nlosExclusion/GNSS_Raw_Array.h>
-#include <nlosExclusion/GNSS_Raw.h>
+#include <nlosexclusion/GNSS_Raw_Array.h>
+#include <nlosexclusion/GNSS_Raw.h>
 
 FILE* gnss_ublox_wls = fopen("gnss_ublox_wls.csv", "w+");
 
@@ -78,7 +78,7 @@ double lastGNSSTime = 0;
 extern void pntposRegisterPub(ros::NodeHandle &n)
 {
     pub_pntpos_odometry = n.advertise<nav_msgs::Odometry>("WLSENURTKLIB", 1000);
-    pub_gnss_raw = n.advertise<nlosExclusion::GNSS_Raw_Array>("GNSSPsrCarRov1", 1000);
+    pub_gnss_raw = n.advertise<nlosexclusion::GNSS_Raw_Array>("GNSSPsrCarRov1", 1000);
     pub_wls_odometry = n.advertise<nav_msgs::Odometry>("WLSENUGoGPS", 1000);
     pub_velocity_from_doppler = n.advertise<nav_msgs::Odometry>("GNSSDopVelRov1", 1000); // velocity_from_doppler
 }
@@ -646,8 +646,8 @@ extern int pntpos(const obsd_t *obs, int n, const nav_t *nav,
         opt_.tropopt=TROPOPT_SAAS;
     }
 
-    /* construct data for WLS with nlosExclusion::GNSS_Raw_Array*/
-    nlosExclusion::GNSS_Raw_Array gnss_data;
+    /* construct data for WLS with nlosexclusion::GNSS_Raw_Array*/
+    nlosexclusion::GNSS_Raw_Array gnss_data;
     int current_week = 0;
     double current_tow = time2gpst(obs[0].time, &current_week);
     double epoch_time[100];
@@ -666,14 +666,14 @@ extern int pntpos(const obsd_t *obs, int n, const nav_t *nav,
     int CMP_cnt = 0, GPS_cnt = 0, GAL_cnt = 0, GLO_cnt = 0;
     for(int s_i=0;s_i<n; s_i++)
     {
-        nlosExclusion::GNSS_Raw gnss_raw;
+        nlosexclusion::GNSS_Raw gnss_raw;
         gnss_raw.GNSS_time = current_tow;
         gnss_raw.prE3dMA = current_week;
         gnss_raw.GNSS_week = current_week;
         gnss_raw.total_sv = float(n);
         gnss_raw.prn_satellites_index = float(obs[s_i].sat);
 
-        nlosExclusion::GNSS_Raw_mf gnss_raw_mf;
+        nlosexclusion::GNSS_Raw_mf gnss_raw_mf;
         gnss_raw_mf.GNSS_week = current_week;
         gnss_raw_mf.GNSS_time = current_tow;
         gnss_raw_mf.total_sv = float(n);

@@ -34,8 +34,8 @@ SHELL ["/bin/bash", "-c"]
 RUN   mkdir -p ~/software_ws \
       && mkdir -p ~/toyslam_ws/src \
       && cd ~/toyslam_ws/src \
-      && git clone -b stf_main https://github.com/XRWang5658/ToySLAM.git \
-      && mv ./ToySLAM/support_files/ceres-solver.tar.gz ~/software_ws/ \
+      && git clone -b stf_main https://github.com/XRWang5658/toyslam.git \
+      && mv ./toyslam/support_files/ceres-solver.tar.gz ~/software_ws/ \
       && cd ~/software_ws \
       && tar -zxvf ceres-solver.tar.gz \
       && mkdir -p ceres-bin \

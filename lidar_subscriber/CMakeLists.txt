@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.0.2)
-project(ToySLAM)
+project(toyslam)
 
 # # set(CMAKE_CXX_FLAGS "-std=c++11")
 # set(CMAKE_CXX_FLAGS "-std=c++14")

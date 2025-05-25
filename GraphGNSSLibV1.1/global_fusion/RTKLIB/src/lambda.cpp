@@ -39,8 +39,8 @@
 #include <novatel_msgs/INSPVAX.h> // novatel_msgs/INSPVAX
 #include <novatel_msgs/BESTPOS.h> // novatel_msgs/INSPVAX
 
-#include <nlosExclusion/GNSS_Raw_Array.h>
-#include <nlosExclusion/GNSS_Raw.h>
+#include <nlosexclusion/GNSS_Raw_Array.h>
+#include <nlosexclusion/GNSS_Raw.h>
 #include "../../include/gnss_tools.h"
 
 static const char rcsid[]="$Id: lambda.c,v 1.1 2008/07/17 21:48:06 ttaka Exp $";

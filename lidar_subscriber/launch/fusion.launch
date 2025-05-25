@@ -1,7 +1,7 @@
 <launch>
-    <node pkg="ToySLAM" type="uwb_node" name="uwb_position_estimator" output="screen">
+    <node pkg="toyslam" type="uwb_node" name="uwb_position_estimator" output="screen">
         <!-- Load parameters from YAML file -->
-        <rosparam command="load" file="$(find ToySLAM)/config/params.yaml" />
+        <rosparam command="load" file="$(find toyslam)/config/params.yaml" />
         
         <!-- Override any parameters if needed -->
         <param name="noise_std" value="0.2" />

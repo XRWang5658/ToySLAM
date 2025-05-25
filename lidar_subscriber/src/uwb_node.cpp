@@ -8,7 +8,7 @@
 #include <vector>
 #include <xmlrpcpp/XmlRpcException.h>
 
-// roslaunch ToySLAM fusion.launch 
+// roslaunch toyslam fusion.launch 
 
 // simulate the UWB ranging measurements and do the positioning
 

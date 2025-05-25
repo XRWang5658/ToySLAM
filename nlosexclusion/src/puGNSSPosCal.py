@@ -14,14 +14,14 @@ import numpy as np #numpy needed renamed as np
 import geometry_msgs.msg as gm #ros geometry message
 from geometry_msgs.msg import Quaternion, Point, Pose, Twist,PoseArray # commonly used message type
 from sensor_msgs.msg   import NavSatFix # standard message type for GNSSs
-from nlosExclusion.msg import GNSS_Raw_Array,GNSS_Raw # customerized ros message type
+from nlosexclusion.msg import GNSS_Raw_Array,GNSS_Raw # customerized ros message type
 from matplotlib.patches import Ellipse, Circle # draw circle needs library
 import csv # csv reading needed library
 import datetime #time format (datetime)
 import time #time format (time)
 import llh2ecef # llh to ecef
 import ecef2llh #ecef coordinate to llh coordinate
-from nlosExclusion.msg import Satellite_Info # customized ros message type Satellite_Info containing satellites exclusion numbers
+from nlosexclusion.msg import Satellite_Info # customized ros message type Satellite_Info containing satellites exclusion numbers
 import rospy
 from novatel_msgs.msg import BESTPOS
 

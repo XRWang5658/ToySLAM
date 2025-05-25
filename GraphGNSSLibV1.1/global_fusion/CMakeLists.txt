@@ -27,7 +27,7 @@ find_package(catkin REQUIRED COMPONENTS
   roscpp
   rospy
   std_msgs
-  nlosExclusion
+  nlosexclusion
 )
 
 find_package(Ceres REQUIRED)
@@ -53,12 +53,12 @@ add_library(ephemeris RTKLIB/src/ephemeris.c)
 add_library(geoid RTKLIB/src/geoid.c)
 add_library(ionex RTKLIB/src/ionex.c)
 add_library(lambda RTKLIB/src/lambda.cpp)
-add_dependencies(lambda nlosExclusion_gencpp)
+add_dependencies(lambda nlosexclusion_gencpp)
 add_library(options RTKLIB/src/options.c)
 add_library(pntpos RTKLIB/src/pntpos.cpp)
-add_dependencies(pntpos nlosExclusion_gencpp)
+add_dependencies(pntpos nlosexclusion_gencpp)
 add_library(postpos RTKLIB/src/postpos.cpp)
-add_dependencies(postpos nlosExclusion_gencpp)
+add_dependencies(postpos nlosexclusion_gencpp)
 add_library(ppp_ar RTKLIB/src/ppp_ar.c)
 add_library(ppp RTKLIB/src/ppp.c)
 add_library(preceph RTKLIB/src/preceph.c)
@@ -71,7 +71,7 @@ add_library(rtcm3 RTKLIB/src/rtcm3.c)
 add_library(rtcm3e RTKLIB/src/rtcm3e.c)
 add_library(rtkcmn RTKLIB/src/rtkcmn.c)
 add_library(rtkpos RTKLIB/src/rtkpos.cpp)
-add_dependencies(rtkpos nlosExclusion_gencpp)
+add_dependencies(rtkpos nlosexclusion_gencpp)
 add_library(rtksvr RTKLIB/src/rtksvr.c)
 add_library(sbas RTKLIB/src/sbas.c)
 add_library(solution RTKLIB/src/solution.c)

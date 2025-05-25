@@ -195,7 +195,7 @@ please enable the following in rtklib.h
       compression: none [9737/9737 chunks]
       types:       geometry_msgs/Pose           [e45d45a5a1ce597b249e23fb30fc871f]
                   nav_msgs/Odometry            [cd5e73d190d741a2f92e81eda573aca7]
-                  nlosExclusion/GNSS_Raw_Array [6a69c5dd28d3ae527f3fdefebda5da69]
+                  nlosexclusion/GNSS_Raw_Array [6a69c5dd28d3ae527f3fdefebda5da69]
                   novatel_msgs/BESTPOS         [8321b9523105411643891c8653878967]
                   novatel_msgs/CORRIMUDATA     [8ca3f26f898322425170fe621393f009]
                   novatel_msgs/INSCOV          [75d77cf9321af3888caeeab3a756d0ac]
@@ -222,8 +222,8 @@ please enable the following in rtklib.h
                   /novatel_data/inscov                          487 msgs    : novatel_msgs/INSCOV         
                   /novatel_data/inspvax                         487 msgs    : novatel_msgs/INSPVAX        
                   /rosbag_generator_node/GNSSDopVelRov1         482 msgs    : nav_msgs/Odometry           
-                  /rosbag_generator_node/GNSSPsrCarRov1         482 msgs    : nlosExclusion/GNSS_Raw_Array
-                  /rosbag_generator_node/GNSSPsrCarStation1     482 msgs    : nlosExclusion/GNSS_Raw_Array
+                  /rosbag_generator_node/GNSSPsrCarRov1         482 msgs    : nlosexclusion/GNSS_Raw_Array
+                  /rosbag_generator_node/GNSSPsrCarStation1     482 msgs    : nlosexclusion/GNSS_Raw_Array
                   /ublox_node/aidalm                            487 msgs    : ublox_msgs/AidALM           
                   /ublox_node/aideph                            487 msgs    : ublox_msgs/AidEPH           
                   /ublox_node/fix                               487 msgs    : sensor_msgs/NavSatFix       
@@ -247,7 +247,7 @@ please enable the following in rtklib.h
       compression: none [6011/6011 chunks]
       types:       geometry_msgs/Pose           [e45d45a5a1ce597b249e23fb30fc871f]
                   nav_msgs/Odometry            [cd5e73d190d741a2f92e81eda573aca7]
-                  nlosExclusion/GNSS_Raw_Array [6a69c5dd28d3ae527f3fdefebda5da69]
+                  nlosexclusion/GNSS_Raw_Array [6a69c5dd28d3ae527f3fdefebda5da69]
                   novatel_msgs/BESTPOS         [8321b9523105411643891c8653878967]
                   novatel_msgs/CORRIMUDATA     [8ca3f26f898322425170fe621393f009]
                   novatel_msgs/INSCOV          [75d77cf9321af3888caeeab3a756d0ac]
@@ -267,8 +267,8 @@ please enable the following in rtklib.h
                   /novatel_data/inscov                          300 msgs    : novatel_msgs/INSCOV         
                   /novatel_data/inspvax                         300 msgs    : novatel_msgs/INSPVAX        
                   /rosbag_generator_node/GNSSDopVelRov1         300 msgs    : nav_msgs/Odometry           
-                  /rosbag_generator_node/GNSSPsrCarRov1         300 msgs    : nlosExclusion/GNSS_Raw_Array
-                  /rosbag_generator_node/GNSSPsrCarStation1     300 msgs    : nlosExclusion/GNSS_Raw_Array
+                  /rosbag_generator_node/GNSSPsrCarRov1         300 msgs    : nlosexclusion/GNSS_Raw_Array
+                  /rosbag_generator_node/GNSSPsrCarStation1     300 msgs    : nlosexclusion/GNSS_Raw_Array
                   /rosout                                        16 msgs    : rosgraph_msgs/Log            (3 connections)
                   /rosout_agg                                    12 msgs    : rosgraph_msgs/Log           
                   /velodyne_points                             3005 msgs    : sensor_msgs/PointCloud2
@@ -285,7 +285,7 @@ please enable the following in rtklib.h
       compression: none [31969/31969 chunks]
       types:       geometry_msgs/Pose           [e45d45a5a1ce597b249e23fb30fc871f]
                   nav_msgs/Odometry            [cd5e73d190d741a2f92e81eda573aca7]
-                  nlosExclusion/GNSS_Raw_Array [6a69c5dd28d3ae527f3fdefebda5da69]
+                  nlosexclusion/GNSS_Raw_Array [6a69c5dd28d3ae527f3fdefebda5da69]
                   novatel_msgs/BESTPOS         [8321b9523105411643891c8653878967]
                   novatel_msgs/CORRIMUDATA     [8ca3f26f898322425170fe621393f009]
                   novatel_msgs/INSCOV          [75d77cf9321af3888caeeab3a756d0ac]
@@ -305,8 +305,8 @@ please enable the following in rtklib.h
                   /novatel_data/inscov                          1599 msgs    : novatel_msgs/INSCOV         
                   /novatel_data/inspvax                         1599 msgs    : novatel_msgs/INSPVAX        
                   /rosbag_generator_node/GNSSDopVelRov1         1181 msgs    : nav_msgs/Odometry           
-                  /rosbag_generator_node/GNSSPsrCarRov1         1181 msgs    : nlosExclusion/GNSS_Raw_Array
-                  /rosbag_generator_node/GNSSPsrCarStation1     1181 msgs    : nlosExclusion/GNSS_Raw_Array
+                  /rosbag_generator_node/GNSSPsrCarRov1         1181 msgs    : nlosexclusion/GNSS_Raw_Array
+                  /rosbag_generator_node/GNSSPsrCarStation1     1181 msgs    : nlosexclusion/GNSS_Raw_Array
                   /rosout                                         15 msgs    : rosgraph_msgs/Log            (3 connections)
                   /velodyne_points                             15979 msgs    : sensor_msgs/PointCloud2
       ```

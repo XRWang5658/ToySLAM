@@ -27,7 +27,7 @@ import sys
 import  math
 from matplotlib.patches import Circle
 import csv # csv reading needed library
-from nlosExclusion.msg import GNSS_Raw,GNSS_Raw_Array,exclusionSatNum # ros msg
+from nlosexclusion.msg import GNSS_Raw,GNSS_Raw_Array,exclusionSatNum # ros msg
 from geometry_msgs.msg import Quaternion, Point, Pose, Twist,PoseArray # ros message needed
 from PyQt4 import QtCore, QtGui
 import puGNSSPosCal
@@ -255,7 +255,7 @@ class puDouDeckBusS(puSkyplot): # callback double-decker, yaw and GNSS data for 
 
 
 
-class nlosExclusionS_(QMainWindow): # by timer   For paper NLOS exclusion caused by double-decekr bus
+class nlosexclusionS_(QMainWindow): # by timer   For paper NLOS exclusion caused by double-decekr bus
 
     def __init__(self, parent=None):
         QMainWindow.__init__(self, parent)

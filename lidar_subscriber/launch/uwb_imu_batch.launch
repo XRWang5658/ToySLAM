@@ -1,10 +1,10 @@
 <launch>
 
-     <arg name="results_log_path" default="/home/xiangru/code/toyslam_ws/src/data/results.txt" 
+     <arg name="results_log_path" default="$(find toyslam)/../../../data/results.txt" 
          doc="Path for the optimization results log file (parameters). Empty generates default name." />
-     <arg name="metrics_log_path" default="/home/xiangru/code/toyslam_ws/src/data/metrics.txt" 
+     <arg name="metrics_log_path" default="$(find toyslam)/../../../data/metrics.txt" 
          doc="Path for the optimization metrics log file (summary/computation). Empty generates default name." />
-     <arg name="bias_log_path" default="/home/xiangru/code/toyslam_ws/src/data/bias.txt" 
+     <arg name="bias_log_path" default="$(find toyslam)/../../../data/bias.txt" 
          doc="Path for the optimization bias log file (summary/computation). Empty generates default name." />
 
      <!--Most Critical: Gravity Acc-->
@@ -168,10 +168,10 @@
 
     <!-- ============================== NODE CONFIGURATION ============================== -->
     <!-- Launch RViz for visualization -->
-    <node if="$(arg rviz)" name="rviz" pkg="rviz" type="rviz" args="-d $(find ToySLAM)/rviz/gps_trajectory.rviz" />
+    <node if="$(arg rviz)" name="rviz" pkg="rviz" type="rviz" args="-d $(find toyslam)/rviz/gps_trajectory.rviz" />
 
     <!-- GPS/IMU Fusion Node -->
-    <node name="uwb_imu_batch_node" pkg="ToySLAM" type="uwb_imu_batch_node" output="screen">
+    <node name="uwb_imu_batch_node" pkg="toyslam" type="uwb_imu_batch_node" output="screen">
         <!-- Pass all parameters to the node -->
 
         <param name="gravity_magnitude" value="$(arg gravity_magnitude)" />
