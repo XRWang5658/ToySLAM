@@ -1952,22 +1952,38 @@ private:
     // ==================== VISUALIZATION METHODS ====================
 
     // Update optimized path in publishOptimizedPose 
+    // Update optimized path
+    // This function will now also get the latest state from state_window_
     void updateOptimizedPath() {
+        // 首先检查 state_window_ 是否为空
+        if (state_window_.empty()) {
+            ROS_WARN("state_window_ is empty, cannot update optimized path.");
+            return;
+        }
+
+        // 获取 state_window_ 中的最新状态
+        // 假设 StateType 是 state_window_ 中存储的元素类型
+        const auto& latest_state = state_window_.back();
+
         geometry_msgs::PoseStamped pose_stamped;
-        pose_stamped.header.stamp = ros::Time(current_state_.timestamp);
-        pose_stamped.header.frame_id = world_frame_id_;
-        pose_stamped.pose.position.x = current_state_.position.x();
-        pose_stamped.pose.position.y = current_state_.position.y();
-        pose_stamped.pose.position.z = current_state_.position.z();
-        pose_stamped.pose.orientation.w = current_state_.orientation.w();
-        pose_stamped.pose.orientation.x = current_state_.orientation.x();
-        pose_stamped.pose.orientation.y = current_state_.orientation.y();
-        pose_stamped.pose.orientation.z = current_state_.orientation.z();
+        pose_stamped.header.stamp = ros::Time(latest_state.timestamp); // 使用最新状态的时间戳
+        pose_stamped.header.frame_id = world_frame_id_; // 假设 world_frame_id_ 仍然是成员变量
         
-        optimized_path_msg_.header.stamp = ros::Time(current_state_.timestamp);
+        // Position
+        pose_stamped.pose.position.x = latest_state.position.x();
+        pose_stamped.pose.position.y = latest_state.position.y();
+        pose_stamped.pose.position.z = latest_state.position.z();
+        
+        // Orientation
+        pose_stamped.pose.orientation.w = latest_state.orientation.w();
+        pose_stamped.pose.orientation.x = latest_state.orientation.x();
+        pose_stamped.pose.orientation.y = latest_state.orientation.y();
+        pose_stamped.pose.orientation.z = latest_state.orientation.z();
+        
+        optimized_path_msg_.header.stamp = ros::Time(latest_state.timestamp); // 使用最新状态的时间戳
         optimized_path_msg_.poses.push_back(pose_stamped);
         
-        // // Limit path size
+        // // Limit path size (这段逻辑被注释掉了，按原样保留)
         // if (optimized_path_msg_.poses.size() > 1000) {
         //     optimized_path_msg_.poses.erase(optimized_path_msg_.poses.begin());
         // }
@@ -2727,7 +2743,7 @@ private:
                 // Only add noise to every nth message to create visible outliers
                 static int msg_counter = 0;
 
-                if(msg_counter % 1== 0){
+                if(msg_counter % 3== 0){
                 
                 // Generate random noise
                 double noise_x = ((double)rand() / RAND_MAX * 2.0 - 1.0) * gps_noise_magnitude_;
@@ -2740,12 +2756,13 @@ private:
                 enu_position.y() += noise_y;
                 enu_position.z() += noise_z;
 
-                msg_counter++;
+                
                 
                 // // Log the injected noise
                 // ROS_INFO("Injected GPS noise: [%.2f, %.2f, %.2f] meters at t=%.3f", 
                 //         noise_x, noise_y, noise_z, unix_timestamp);
                 }
+                msg_counter++;
                 
             }
             
@@ -2769,8 +2786,9 @@ private:
             enu_velocity = convertRfuToEnu(body_velocity, msg->roll, msg->pitch, msg->azimuth);
             
             // Convert NED azimuth to ENU yaw
-            double yaw_enu = M_PI/2.0 - azimuth_rad;
-            // double yaw_enu = - azimuth_rad;  // NED to ENU conversion
+            // double yaw_enu = azimuth_rad - M_PI / 2.0; // NED to ENU conversion
+            // // double yaw_enu = - azimuth_rad;  // NED to ENU conversion
+            double yaw_enu =  azimuth_rad - M_PI / 2.0;
             
             // Create quaternion from euler angles
             Eigen::Quaterniond orientation = 
@@ -2780,6 +2798,9 @@ private:
             
             // Ensure quaternion is normalized
             orientation.normalize();
+            // Eigen::Quaterniond dq(0,1,0,0);
+            // orientation = (dq * orientation).normalized();
+
             
             // Create GPS measurement with timestamps from the bag
             GpsMeasurement measurement;
@@ -2899,18 +2920,21 @@ private:
             
             // Use GPS orientation only if configured
             if (use_gps_orientation_as_initial_) {
-                current_state_.orientation = gps.orientation;
+                current_state_.orientation =  gps.orientation;
             } else {
                 // Use a default orientation (or keep previous if available)
-                if (current_state_.orientation.w() == 0) {
-                    current_state_.orientation = Eigen::Quaterniond::Identity();
-                    // Eigen::Quaterniond q(
-                    //     Eigen::AngleAxisd(133.9, Eigen::Vector3d::UnitZ()) *
-                    //     Eigen::AngleAxisd(-1.738, Eigen::Vector3d::UnitY()) *
-                    //     Eigen::AngleAxisd(0.440, Eigen::Vector3d::UnitX())
-                    // );
-                    // current_state_.orientation = q.normalized();
-                }
+                // if (1) {
+                //     current_state_.orientation = Eigen::Quaterniond::Identity();
+                //     Eigen::Quaterniond q(
+                //         // Eigen::AngleAxisd(0.440, Eigen::Vector3d::UnitX()) *
+                //         // Eigen::AngleAxisd(-1.738, Eigen::Vector3d::UnitY()) *
+                //         // Eigen::AngleAxisd(133.9, Eigen::Vector3d::UnitZ())
+                //         Eigen::AngleAxisd(133.9, Eigen::Vector3d::UnitZ()) *
+                //         Eigen::AngleAxisd(-1.738, Eigen::Vector3d::UnitY()) *
+                //         Eigen::AngleAxisd(0.440, Eigen::Vector3d::UnitX())
+                //     );
+                //     current_state_.orientation = q.normalized();
+                // }
                 // Try to find IMU orientation if available
                 sensor_msgs::Imu closest_imu = findClosestImuMeasurement(gps.timestamp);
                 if (closest_imu.header.stamp.toSec() > 0 && 
@@ -3012,18 +3036,18 @@ private:
                 if (use_gps_orientation_as_initial_) {
                     new_state.orientation = gps.orientation.normalized();
                 } else {
-                    // // Keep current orientation or try to use IMU
-                    // sensor_msgs::Imu closest_imu = findClosestImuMeasurement(gps.timestamp);
-                    // if (closest_imu.header.stamp.toSec() > 0 && 
-                    //     closest_imu.orientation_covariance[0] != -1) {
-                    //     new_state.orientation = Eigen::Quaterniond(
-                    //         closest_imu.orientation.w,
-                    //         closest_imu.orientation.x,
-                    //         closest_imu.orientation.y,
-                    //         closest_imu.orientation.z
-                    //     ).normalized();
-                    // }
-                    new_state.orientation = Eigen::Quaterniond::Identity();
+                    // Keep current orientation or try to use IMU
+                    sensor_msgs::Imu closest_imu = findClosestImuMeasurement(gps.timestamp);
+                    if (closest_imu.header.stamp.toSec() > 0 && 
+                        closest_imu.orientation_covariance[0] != -1) {
+                        new_state.orientation = Eigen::Quaterniond(
+                            closest_imu.orientation.w,
+                            closest_imu.orientation.x,
+                            closest_imu.orientation.y,
+                            closest_imu.orientation.z
+                        ).normalized();
+                    }
+                    // new_state.orientation = Eigen::Quaterniond::Identity();
                 }
                 
                 if (use_gps_velocity_) {
@@ -3096,7 +3120,8 @@ private:
                 // }
 
                 // use the last keyframe's orientation
-                propagated_state_gps.orientation = last_keyframe.orientation;
+                // propagated_state_gps.orientation = last_keyframe.orientation;
+
 
                 // // display the orientation from 2 sources
                 // ROS_INFO_STREAM("IMU orientation: " << imu_orientation.coeffs().transpose());
@@ -3136,7 +3161,7 @@ private:
                 // get the olded state
                 State oldest_state = state_window_.front();
                 updateFinalPath(oldest_state);
-                logKeyframeBias(oldest_state);
+                // logKeyframeBias(oldest_state);
 
                 state_window_.pop_front();
                 // add another track to show the optimized result
@@ -4128,6 +4153,12 @@ private:
 
         // reset the current preint data to accept imu messages for next keyframe
         current_preint_test.reset();
+        current_preint_test.set_gravity(gravity_magnitude_);
+        // current_preint_test.setBias(initial_acc_bias_, initial_gyro_bias_);
+        current_preint_test.set_noise(
+            imu_acc_noise_, imu_gyro_noise_,
+            imu_acc_bias_noise_, imu_gyro_bias_noise_
+        );
 
         // try {
         //     // 0. 输入有效性检查
@@ -4759,23 +4790,23 @@ private:
                 }
             }
             
-            // Compute preintegration data between keyframes
-            for (size_t i = 0; i < state_window_.size() - 1; ++i) {
-                double start_time = state_window_[i].timestamp;
-                double end_time = state_window_[i+1].timestamp;
+            // // Compute preintegration data between keyframes
+            // for (size_t i = 0; i < state_window_.size() - 1; ++i) {
+            //     double start_time = state_window_[i].timestamp;
+            //     double end_time = state_window_[i+1].timestamp;
                 
-                std::pair<double, double> key(start_time, end_time);
+            //     std::pair<double, double> key(start_time, end_time);
                 
-                // if (preintegration_map_.find(key) == preintegration_map_.end()) {
-                    // performPreintegrationBetweenKeyframes_(state_window_[i], state_window_[i+1], 
-                    //                                      state_window_[i].acc_bias, 
-                    //                                      state_window_[i].gyro_bias);
-                    // performPreintegrationBetweenKeyframes(start_time, end_time, 
-                    //                                       state_window_[i].acc_bias, 
-                    //                                       state_window_[i].gyro_bias);
-                    // performPreintegrationBetweenKeyframes_()
-                // }
-            }
+            //     // if (preintegration_map_.find(key) == preintegration_map_.end()) {
+            //         // performPreintegrationBetweenKeyframes_(state_window_[i], state_window_[i+1], 
+            //         //                                      state_window_[i].acc_bias, 
+            //         //                                      state_window_[i].gyro_bias);
+            //         // performPreintegrationBetweenKeyframes(start_time, end_time, 
+            //         //                                       state_window_[i].acc_bias, 
+            //         //                                       state_window_[i].gyro_bias);
+            //         // performPreintegrationBetweenKeyframes_()
+            //     // }
+            // }
 
             // Time the factor graph optimization
             auto start_time = std::chrono::high_resolution_clock::now();
@@ -5068,7 +5099,7 @@ private:
             // Disable complex features during initial iterations to improve stability
             enable_horizontal_velocity_incentive_ = false;
             enable_orientation_smoothness_factor_ = false;
-            max_iterations_ = 5; // Use fewer iterations during initial phase
+            // max_iterations_ = 5; // Use fewer iterations during initial phase
             ROS_DEBUG("Using simplified optimization for initial phase (%d/5)", optimization_count_+1);
         }
         
@@ -5106,16 +5137,12 @@ private:
                 var.pose[1] = state.position.y();
                 var.pose[2] = state.position.z();
 
-                Eigen::Quaterniond q = state.orientation;
-                q.normalize();
-                // // print out the quaternion
-                // ROS_INFO("Quaternion of state %i: [%.2f, %.2f, %.2f, %.2f]", i, q.w(), q.x(), q.y(), q.z());
                 
-                // Orientation (quaternion): w, x, y, z
-                var.pose[3] = q.x();
-                var.pose[4] = q.y();
-                var.pose[5] = q.z();
-                var.pose[6] = q.w();
+                // Orientation (quaternion): in x y z w order
+                var.pose[3] = state.orientation.x();
+                var.pose[4] = state.orientation.y();
+                var.pose[5] = state.orientation.z();
+                var.pose[6] = state.orientation.w();
                 
                 // Velocity
                 var.velocity[0] = state.velocity.x();
@@ -5172,10 +5199,10 @@ private:
                             ceres::CostFunction* gps_pos_factor = GpsPositionFactor::Create(
                                 gps.position, gps_position_noise_);
 
-                            // Use HuberLoss for robustness
-                            ceres::LossFunction* loss_function = new ceres::HuberLoss(0.1);
+                            // // Use HuberLoss for robustness
+                            // ceres::LossFunction* loss_function = new ceres::HuberLoss(0.1);
                             
-                            problem.AddResidualBlock(gps_pos_factor, loss_function, variables[i].pose);
+                            problem.AddResidualBlock(gps_pos_factor, NULL, variables[i].pose);
                             // ROS_INFO("Add GPS position factor, keyframe_time=%.3f", keyframe_time);
                             // ROS_INFO("GPS position: [%.2f, %.2f, %.2f]", 
                             //         gps.position.x(), gps.position.y(), gps.position.z());
@@ -5372,11 +5399,11 @@ private:
                                            variables[i].pose, variables[i].velocity, variables[i].bias,
                                            variables[i+1].pose, variables[i+1].velocity, variables[i+1].bias);
 
-                    // ROS_INFO("Add IMU factor between keyframes [%.3f-%.3f]", start_time, end_time);
-                    // ROS_INFO("IMU preintegration: dt=%.3f, dp=[%.3f,%.3f,%.3f], dv=[%.3f,%.3f,%.3f], dq=[%.3f,%.3f,%.3f,%.3f]",
-                    //         preint.get_sum_dt(), preint.getDeltaAlpha().x(), preint.getDeltaAlpha().y(), preint.getDeltaAlpha().z(),
-                    //         preint.getDeltaBeta().x(), preint.getDeltaBeta().y(), preint.getDeltaBeta().z(),
-                    //         preint.getDeltaGamma().w(), preint.getDeltaGamma().x(), preint.getDeltaGamma().y(), preint.getDeltaGamma().z());
+                    ROS_INFO("Add IMU factor between keyframes [%.3f-%.3f]", start_time, end_time);
+                    ROS_INFO("IMU preintegration: dt=%.3f, dp=[%.3f,%.3f,%.3f], dv=[%.3f,%.3f,%.3f], dq=[%.3f,%.3f,%.3f,%.3f]",
+                            preint.get_sum_dt(), preint.getDeltaAlpha().x(), preint.getDeltaAlpha().y(), preint.getDeltaAlpha().z(),
+                            preint.getDeltaBeta().x(), preint.getDeltaBeta().y(), preint.getDeltaBeta().z(),
+                            preint.getDeltaGamma().w(), preint.getDeltaGamma().x(), preint.getDeltaGamma().y(), preint.getDeltaGamma().z());
                     // ROS_INFO("State positions: [%.2f, %.2f, %.2f] [%.2f, %.2f, %.2f]",
                     //         variables[i].pose[0], variables[i].pose[1], variables[i].pose[2],
                     //         variables[i+1].pose[0], variables[i+1].pose[1], variables[i+1].pose[2]);
@@ -5388,9 +5415,9 @@ private:
                     //         variables[i+1].pose[3], variables[i+1].pose[4], variables[i+1].pose[5], variables[i+1].pose[6]);
 
                     // 计算初始 residual
-                    double residuals[15]; 
-                    double* parameters[6] = {variables[i].pose, variables[i].velocity, variables[i].bias,
-                                            variables[i+1].pose, variables[i+1].velocity, variables[i+1].bias};
+                    // double residuals[15]; 
+                    // double* parameters[6] = {variables[i].pose, variables[i].velocity, variables[i].bias,
+                    //                         variables[i+1].pose, variables[i+1].velocity, variables[i+1].bias};
                     // imu_factor_->Evaluate(parameters, residuals, nullptr);
                     // // 打印所有初始的residual
                     // for (size_t j = 0; j < 15; ++j) {
@@ -5428,47 +5455,47 @@ private:
             //         problem.NumResiduals(), problem.NumParameterBlocks());
             // add output for debug use
             // options.minimizer_progress_to_stdout = false;
-            options.minimizer_progress_to_stdout = true;
+            // options.minimizer_progress_to_stdout = true;
             options.num_threads = 8;
 
             // // //compare with auto computed jacobian
-            // options.check_gradients = true;
-            // options.gradient_check_relative_precision = 1e-2;
+            //options.check_gradients = true;
+            //            options.gradient_check_relative_precision = 1e-2;
+            
+            // print the initial residuals
+            std::cout << "Evaluating initial residuals before optimization..." << std::endl;
 
-            // // print the initial residuals
-            // std::cout << "Evaluating initial residuals before optimization..." << std::endl;
+            double initial_cost;
+            std::vector<double> initial_residuals;
+            ceres::Problem::EvaluateOptions eval_options;
+            eval_options.apply_loss_function = false;
 
-            // double initial_cost;
-            // std::vector<double> initial_residuals;
-            // ceres::Problem::EvaluateOptions eval_options;
-            // eval_options.apply_loss_function = false;
-
-            // std::vector<double*> parameter_block_ptrs;
-            // problem.GetParameterBlocks(&parameter_block_ptrs);
-            // eval_options.parameter_blocks = parameter_block_ptrs;
+            std::vector<double*> parameter_block_ptrs;
+            problem.GetParameterBlocks(&parameter_block_ptrs);
+            eval_options.parameter_blocks = parameter_block_ptrs;
 
 
-            // if (!problem.Evaluate(eval_options, &initial_cost, &initial_residuals, nullptr, nullptr)) {
-            //     // nullptr 用于雅可比和梯度，因为我们这里只关心残差和代价
-            //     std::cerr << "ERROR: Problem::Evaluate() failed before optimization. "
-            //             << "Check problem construction and initial parameter values." << std::endl;
-            // } else {
-            //     std::cout << "Initial Cost (raw, 0.5 * sum(residuals^2)): " << initial_cost << std::endl;
-            //     std::cout << "Number of initial residuals: " << initial_residuals.size() << std::endl;
-            //     std::cout << "Initial Residuals:" << std::endl;
-            //     for (size_t i = 0; i < initial_residuals.size(); ++i) {
-            //         std::cout << "  residual[" << i << "] = " << initial_residuals[i] << std::endl;
-            //     }
+            if (!problem.Evaluate(eval_options, &initial_cost, &initial_residuals, nullptr, nullptr)) {
+                // nullptr 用于雅可比和梯度，因为我们这里只关心残差和代价
+                std::cerr << "ERROR: Problem::Evaluate() failed before optimization. "
+                        << "Check problem construction and initial parameter values." << std::endl;
+            } else {
+                std::cout << "Initial Cost (raw, 0.5 * sum(residuals^2)): " << initial_cost << std::endl;
+                std::cout << "Number of initial residuals: " << initial_residuals.size() << std::endl;
+                std::cout << "Initial Residuals:" << std::endl;
+                for (size_t i = 0; i < initial_residuals.size(); ++i) {
+                    std::cout << "  residual[" << i << "] = " << initial_residuals[i] << std::endl;
+                }
 
-            //     // 如果你想看到 Ceres 在迭代 0 开始时会看到的 cost (即应用了损失函数)
-            //     eval_options.apply_loss_function = true;
-            //     double initial_cost_with_loss;
-            //     if (problem.Evaluate(eval_options, &initial_cost_with_loss, nullptr, nullptr, nullptr)) {
-            //         std::cout << "Initial Cost (with loss function, as in Solver iter 0): "
-            //                 << initial_cost_with_loss << std::endl;
-            //     }
-            // }
-            // std::cout << "--------------------------------------------------------" << std::endl;
+                // 如果你想看到 Ceres 在迭代 0 开始时会看到的 cost (即应用了损失函数)
+                eval_options.apply_loss_function = true;
+                double initial_cost_with_loss;
+                if (problem.Evaluate(eval_options, &initial_cost_with_loss, nullptr, nullptr, nullptr)) {
+                    std::cout << "Initial Cost (with loss function, as in Solver iter 0): "
+                            << initial_cost_with_loss << std::endl;
+                }
+            }
+            std::cout << "--------------------------------------------------------" << std::endl;
             
             // Solve the optimization problem
             ceres::Solver::Summary summary;
@@ -5506,6 +5533,25 @@ private:
             // for (size_t i = 0; i < variables.size(); ++i) {
             //     ROS_INFO("Optimized state %zu: [%.2f, %.2f, %.2f]", i, variables[i].pose[0], variables[i].pose[1], variables[i].pose[2]);
             // }
+
+            // for debug use, out put the original quaternion and the optimized quaternion
+            // only output the first state
+            // ROS_INFO("Original Quaternion: [%.2f, %.2f, %.2f, %.2f]",
+            //     state_window_[0].orientation.x(), state_window_[0].orientation.y(),
+            //     state_window_[0].orientation.z(), state_window_[0].orientation.w());
+            // ROS_INFO("Optimized Quaternion: [%.2f, %.2f, %.2f, %.2f]",
+            //     variables[0].pose[3], variables[0].pose[4], variables[0].pose[5], variables[0].pose[6]);    
+            // // output the quaternion in euler angle
+            // Eigen::Quaterniond q(variables[0].pose[6], variables[0].pose[3], variables[0].pose[4], variables[0].pose[5]);
+
+            // output the newest state in the state window quaternion   
+            ROS_INFO("Newest Original Quaternion: [%.2f, %.2f, %.2f, %.2f]",
+                state_window_.back().orientation.x(), state_window_.back().orientation.y(),
+                state_window_.back().orientation.z(), state_window_.back().orientation.w());
+            ROS_INFO("Newest Optimized Quaternion: [%.2f, %.2f, %.2f, %.2f]",
+                variables.back().pose[3], variables.back().pose[4], variables.back().pose[5], variables.back().pose[6]);
+
+            
                 
             
             // Update state with optimized values
@@ -5550,7 +5596,7 @@ private:
                     double gyro_bias_diff = (new_gyro_bias - state_window_[i].gyro_bias).norm();
 
                     // If the difference is too large, repropagate the preintegration
-                    if (acc_bias_diff > 0.0005 || gyro_bias_diff > 0.00005) {
+                    if (acc_bias_diff > 0.005 || gyro_bias_diff > 0.0005) {
                         // ROS_WARN("Large bias difference detected: acc [%.3f, %.3f, %.3f], gyro [%.3f, %.3f, %.3f]",
                         //     acc_bias_diff, gyro_bias_diff);
 
@@ -5576,6 +5622,10 @@ private:
 
                 }
             }
+
+            // get the newest state in the state window
+            const State& newest_state = state_window_.back();
+            logKeyframeBias(newest_state);
             
             // Update current state to the latest state in the window
             if (!state_window_.empty()) {
@@ -5778,53 +5828,76 @@ private:
     // Publish optimized pose
     void publishOptimizedPose() {
         try {
+            // 首先检查 state_window_ 是否为空，以避免访问空容器的 back() 导致错误
+            if (state_window_.empty()) {
+                ROS_WARN("state_window_ is empty, cannot publish optimized pose.");
+                return;
+            }
+
+            // 获取 state_window_ 中的最新状态
+            // 假设 StateType 是 state_window_ 中存储的元素类型
+            // 如果 state_window_ 中的元素是指针或智能指针，您可能需要解引用
+            const auto& latest_state = state_window_.back(); // 或者 state_window_.back() 如果不是指针
+
             nav_msgs::Odometry odom_msg;
-            odom_msg.header.stamp = ros::Time(current_state_.timestamp);
+            odom_msg.header.stamp = ros::Time(latest_state.timestamp); // 使用最新状态的时间戳
             odom_msg.header.frame_id = world_frame_id_; // "map"
             odom_msg.child_frame_id = body_frame_id_;   // "base_link"
-            
+
             // Position
-            odom_msg.pose.pose.position.x = current_state_.position.x();
-            odom_msg.pose.pose.position.y = current_state_.position.y();
-            odom_msg.pose.pose.position.z = current_state_.position.z();
-            
+            odom_msg.pose.pose.position.x = latest_state.position.x();
+            odom_msg.pose.pose.position.y = latest_state.position.y();
+            odom_msg.pose.pose.position.z = latest_state.position.z();
+
             // Orientation
-            odom_msg.pose.pose.orientation.w = current_state_.orientation.w();
-            odom_msg.pose.pose.orientation.x = current_state_.orientation.x();
-            odom_msg.pose.pose.orientation.y = current_state_.orientation.y();
-            odom_msg.pose.pose.orientation.z = current_state_.orientation.z();
-            
+            odom_msg.pose.pose.orientation.w = latest_state.orientation.w();
+            odom_msg.pose.pose.orientation.x = latest_state.orientation.x();
+            odom_msg.pose.pose.orientation.y = latest_state.orientation.y();
+            odom_msg.pose.pose.orientation.z = latest_state.orientation.z();
+
+            // //print the orientation in quaternion and euler angle
+            // ROS_INFO("Optimized Quaternion (xyzw): [%.2f, %.2f, %.2f, %.2f]",
+            //     latest_state.orientation.x(), latest_state.orientation.y(),
+            //     latest_state.orientation.z(), latest_state.orientation.w());
+            // Eigen::Vector3d euler = latest_state.orientation.toRotationMatrix().eulerAngles(2, 1, 0);
+            // ROS_INFO("Optimized Euler Angle (xyz): [%.2f, %.2f, %.2f]",
+            //     euler.x() * 180 / M_PI , euler.y() * 180 / M_PI,  euler.z() * 180 / M_PI);
+
             // Velocity
-            odom_msg.twist.twist.linear.x = current_state_.velocity.x();
-            odom_msg.twist.twist.linear.y = current_state_.velocity.y();
-            odom_msg.twist.twist.linear.z = current_state_.velocity.z();
-            
+            odom_msg.twist.twist.linear.x = latest_state.velocity.x();
+            odom_msg.twist.twist.linear.y = latest_state.velocity.y();
+            odom_msg.twist.twist.linear.z = latest_state.velocity.z();
+
             // Publish the message
             optimized_pose_pub_.publish(odom_msg);
-            
+
             // Publish the TF transform
             geometry_msgs::TransformStamped transform_stamped;
-            transform_stamped.header.stamp = odom_msg.header.stamp;
+            transform_stamped.header.stamp = odom_msg.header.stamp; // 与 odom_msg 时间戳一致
             transform_stamped.header.frame_id = world_frame_id_; // "map"
             transform_stamped.child_frame_id = body_frame_id_;   // "base_link"
-            
+
             // Set translation
-            transform_stamped.transform.translation.x = current_state_.position.x();
-            transform_stamped.transform.translation.y = current_state_.position.y();
-            transform_stamped.transform.translation.z = current_state_.position.z();
-            
+            transform_stamped.transform.translation.x = latest_state.position.x();
+            transform_stamped.transform.translation.y = latest_state.position.y();
+            transform_stamped.transform.translation.z = latest_state.position.z();
+
             // Set rotation
-            transform_stamped.transform.rotation.w = current_state_.orientation.w();
-            transform_stamped.transform.rotation.x = current_state_.orientation.x();
-            transform_stamped.transform.rotation.y = current_state_.orientation.y();
-            transform_stamped.transform.rotation.z = current_state_.orientation.z();
-            
+            transform_stamped.transform.rotation.w = latest_state.orientation.w();
+            transform_stamped.transform.rotation.x = latest_state.orientation.x();
+            transform_stamped.transform.rotation.y = latest_state.orientation.y();
+            transform_stamped.transform.rotation.z = latest_state.orientation.z();
+
             // Publish the transform
             tf_broadcaster_.sendTransform(transform_stamped);
-            
+
             // Update and publish the optimized path
+            // 注意：如果 updateOptimizedPath() 函数也依赖于 current_state_，
+            // 那么它可能也需要被修改以使用 state_window_ 中的最新状态，
+            // 或者将最新的状态作为参数传递给它。
+            // 这里我们假设 updateOptimizedPath() 要么不依赖特定状态，要么内部会正确处理。
             updateOptimizedPath();
-            
+
         } catch (const std::exception& e) {
             ROS_ERROR("Exception in publishOptimizedPose: %s", e.what());
         }
