@@ -49,6 +49,7 @@ public:
         jacobian.setIdentity();
         covariance.setIdentity();
         covariance = 1e-8 * covariance;
+        covariance.setZero();
 
         // set default gravity  
         set_gravity(9.785);
@@ -177,7 +178,7 @@ public:
 
             Eigen::MatrixXd V = Eigen::Matrix<double, 15, 18>::Zero();
             V.block<3, 3>(0, 0) = 0.25 * _gamma.toRotationMatrix() * dt * dt;
-            V.block<3, 3>(0, 3) = 0.25 * -gamma_new.toRotationMatrix() * R_a1x * dt * dt * 0.5 * dt;
+            V.block<3, 3>(0, 3) = - 0.25 * gamma_new.toRotationMatrix() * R_a1x * dt * dt * 0.5 * dt;
             V.block<3, 3>(0, 6) = 0.25 * gamma_new.toRotationMatrix() * dt * dt;
             V.block<3, 3>(0, 9) = V.block<3, 3>(0, 3);
 
@@ -185,7 +186,7 @@ public:
             V.block<3, 3>(3, 9) = 0.5 * Eigen::Matrix3d::Identity() * dt;
 
             V.block<3, 3>(6, 0) = 0.5 * _gamma.toRotationMatrix() * dt;
-            V.block<3, 3>(6, 3) = 0.5 * -gamma_new.toRotationMatrix() * R_a1x * dt * 0.5 * dt;
+            V.block<3, 3>(6, 3) = - 0.5 * gamma_new.toRotationMatrix() * R_a1x * dt * 0.5 * dt;
             V.block<3, 3>(6, 6) = 0.5 * gamma_new.toRotationMatrix() * dt;
             V.block<3, 3>(6, 9) = V.block<3, 3>(6, 3);
 
@@ -298,9 +299,6 @@ public:
 
     bool reset()
     {
-        // reset the variables
-        ba.setZero();
-        bg.setZero();
 
         alpha.setZero();
         beta.setZero();
@@ -317,6 +315,7 @@ public:
         jacobian.setIdentity();
         covariance.setIdentity();
         covariance = 1e-8 * covariance;
+        covariance.setZero();
 
         sum_dt = 0.0;
 
