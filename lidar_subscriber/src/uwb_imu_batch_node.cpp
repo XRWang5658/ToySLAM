@@ -130,83 +130,6 @@ public:
 };
 
 
-    // Position is updated as-is, quaternion through quaternion multiplication
-    // virtual bool Plus(const double* x, const double* delta, double* x_plus_delta) const {
-    //     // Position update: simple addition
-    //     x_plus_delta[0] = x[0] + delta[0];
-    //     x_plus_delta[1] = x[1] + delta[1];
-    //     x_plus_delta[2] = x[2] + delta[2];
-        
-    //     // Quaternion update: quaternion multiplication
-    //     const double* q = x + 3;
-    //     Eigen::Quaterniond q_x(q[0], q[1], q[2], q[3]);
-        
-    //     // Convert small delta rotation to quaternion
-    //     Eigen::Quaterniond dq;
-    //     const double theta_squared = delta[3] * delta[3] + delta[4] * delta[4] + delta[5] * delta[5];
-        
-    //     if (theta_squared > 0.0) {
-    //         const double theta = std::sqrt(theta_squared);
-    //         const double half_theta = theta * 0.5;
-    //         const double scale = sin(half_theta) / theta;
-    //         dq = Eigen::Quaterniond(cos(half_theta), 
-    //                                  delta[3] * scale,
-    //                                  delta[4] * scale,
-    //                                  delta[5] * scale);
-    //     } else {
-    //         dq = Eigen::Quaterniond::Identity();
-    //     }
-        
-    //     // Apply update: q_new = q_x * dq
-    //     Eigen::Quaterniond q_result = q_x * dq;
-    //     q_result.normalize();
-        
-    //     x_plus_delta[3] = q_result.w();
-    //     x_plus_delta[4] = q_result.x();
-    //     x_plus_delta[5] = q_result.y();
-    //     x_plus_delta[6] = q_result.z();
-        
-    //     return true;
-    // }
-
-    
-    // virtual bool ComputeJacobian(const double* x, double* jacobian) const {
-    //     // Initialize to zero
-    //     Eigen::Map<Eigen::Matrix<double, 7, 6, Eigen::RowMajor>> J(jacobian);
-    //     J.setZero();
-        
-    //     // Position part: identity
-    //     J.block<3, 3>(0, 0).setIdentity();
-        
-    //     // Quaternion part: rotation Jacobian
-    //     // Eigen::Map<const Eigen::Quaterniond> q(x + 3);
-        
-    //     // double qw = q.w(), qx = q.x(), qy = q.y(), qz = q.z();
-
-    //     Eigen::Map<const Eigen::Quaterniond> q_map(x + 3);
-    //     Eigen::Quaterniond q = q_map;
-    //     double qw = q.w(), qx = q.x(), qy = q.y(), qz = q.z();
-
-    //     J(3, 3) = -qx * 0.5;
-    //     J(3, 4) = -qy * 0.5;
-    //     J(3, 5) = -qz * 0.5;
-        
-    //     J(4, 3) =  qw * 0.5;
-    //     J(4, 4) = -qz * 0.5;
-    //     J(4, 5) =  qy * 0.5;
-        
-    //     J(5, 3) =  qz * 0.5;
-    //     J(5, 4) =  qw * 0.5;
-    //     J(5, 5) = -qx * 0.5;
-        
-    //     J(6, 3) = -qy * 0.5;
-    //     J(6, 4) =  qx * 0.5;
-    //     J(6, 5) =  qw * 0.5;
-        
-    //     return true;
-    // }
-// };
-
 // CRITICAL: Hard constraint on bias magnitude
 class BiasMagnitudeConstraint {
 public:
@@ -1202,247 +1125,6 @@ private:
     const double noise_std_;
 };
 
-// IMPROVED: IMU pre-integration factor for Ceres with bias correction validity check
-class ImuFactor {
-public:
-    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
-
-    struct ImuPreintegrationBetweenKeyframes {
-        EIGEN_MAKE_ALIGNED_OPERATOR_NEW
-        
-        // Pre-integrated IMU measurements
-        Eigen::Vector3d delta_position;
-        Eigen::Quaterniond delta_orientation;
-        Eigen::Vector3d delta_velocity;
-        
-        // Covariance and Jacobians
-        Eigen::Matrix<double, 9, 9> covariance;
-        Eigen::Matrix<double, 9, 6> jacobian_bias;
-        
-        // Reference biases
-        Eigen::Vector3d acc_bias_ref;
-        Eigen::Vector3d gyro_bias_ref;
-        
-        // Keyframe timestamps for this preintegration
-        double start_time;
-        double end_time;
-        double sum_dt;
-        
-        // Store IMU measurements for possible recomputation
-        std::vector<sensor_msgs::Imu> imu_measurements;
-        
-        ImuPreintegrationBetweenKeyframes() {
-            reset();
-        }
-        
-        void reset() {
-            delta_position.setZero();
-            delta_orientation = Eigen::Quaterniond::Identity();
-            delta_velocity.setZero();
-            covariance = Eigen::Matrix<double, 9, 9>::Identity() * 1e-8;
-            jacobian_bias = Eigen::Matrix<double, 9, 6>::Zero();
-            acc_bias_ref.setZero();
-            gyro_bias_ref.setZero();
-            start_time = 0;
-            end_time = 0;
-            sum_dt = 0;
-            imu_measurements.clear();
-        }
-    };
-    
-    ImuFactor(const ImuPreintegrationBetweenKeyframes& preint, const Eigen::Vector3d& gravity,
-             double bias_correction_threshold = 0.05) 
-        : preint_(preint), gravity_(gravity), bias_correction_threshold_(bias_correction_threshold) {}
-    
-    template <typename T>
-    bool operator()(const T* const pose_i, const T* const vel_i, const T* const bias_i,
-                   const T* const pose_j, const T* const vel_j, const T* const bias_j,
-                   T* residuals) const {
-        
-        // Extract states
-        Eigen::Map<const Eigen::Matrix<T, 3, 1>> p_i(pose_i);
-        Eigen::Map<const Eigen::Quaternion<T>> q_i(pose_i + 3);
-        Eigen::Map<const Eigen::Matrix<T, 3, 1>> v_i(vel_i);
-        Eigen::Map<const Eigen::Matrix<T, 3, 1>> ba_i(bias_i);
-        Eigen::Map<const Eigen::Matrix<T, 3, 1>> bg_i(bias_i + 3);
-        
-        Eigen::Map<const Eigen::Matrix<T, 3, 1>> p_j(pose_j);
-        Eigen::Map<const Eigen::Quaternion<T>> q_j(pose_j + 3);
-        Eigen::Map<const Eigen::Matrix<T, 3, 1>> v_j(vel_j);
-        Eigen::Map<const Eigen::Matrix<T, 3, 1>> ba_j(bias_j);
-        Eigen::Map<const Eigen::Matrix<T, 3, 1>> bg_j(bias_j + 3);
-        
-        // Time delta
-        T sum_dt = T(preint_.sum_dt);
-        
-        // Pre-integrated IMU measurements
-        Eigen::Matrix<T, 3, 1> delta_p = preint_.delta_position.cast<T>();
-        Eigen::Quaternion<T> delta_q = preint_.delta_orientation.cast<T>();
-        Eigen::Matrix<T, 3, 1> delta_v = preint_.delta_velocity.cast<T>();
-        
-        // Reference biases used during pre-integration
-        Eigen::Matrix<T, 3, 1> ba_ref = preint_.acc_bias_ref.cast<T>();
-        Eigen::Matrix<T, 3, 1> bg_ref = preint_.gyro_bias_ref.cast<T>();
-        
-        // IMPROVED: Bias corrections with validity check
-        Eigen::Matrix<T, 3, 1> dba = ba_i - ba_ref;
-        Eigen::Matrix<T, 3, 1> dbg = bg_i - bg_ref;
-        
-        // Check if bias corrections are small enough for linear approximation
-        T dba_norm = dba.norm();
-        T dbg_norm = dbg.norm();
-        
-        // IMPROVED: Add nonlinear correction if bias change is too large
-        // This is a simplified model for the case study - in production,
-        // you would recompute the entire preintegration
-        // if (dba_norm > T(bias_correction_threshold_) || dbg_norm > T(bias_correction_threshold_)) {
-        //     // Apply nonlinear scaling to limit extreme corrections
-        //     T dba_scale = ceres::fmin(T(bias_correction_threshold_) / dba_norm, T(1.0));
-        //     T dbg_scale = ceres::fmin(T(bias_correction_threshold_) / dbg_norm, T(1.0));
-            
-        //     dba *= dba_scale;
-        //     dbg *= dbg_scale;
-
-        //     std::cout <<"if (dba_norm > T(bias_correction_threshold_) || dbg_norm > T(bias_correction_threshold_)) \n";
-        // }
-        
-        // Limit bias correction magnitude for numerical stability
-        // const T max_bias_correction = T(0.1);
-        const T max_bias_correction = T(1.0);
-        for (int i = 0; i < 3; ++i) {
-            dba(i) = ceres::fmin(ceres::fmax(dba(i), -max_bias_correction), max_bias_correction);
-            dbg(i) = ceres::fmin(ceres::fmax(dbg(i), -max_bias_correction), max_bias_correction);
-        }
-        
-        // Jacobian w.r.t bias changes
-        Eigen::Matrix<T, 9, 6> jacobian_bias = preint_.jacobian_bias.cast<T>();
-        
-        // Bias correction vector
-        Eigen::Matrix<T, 6, 1> bias_correction_vec;
-        bias_correction_vec.template segment<3>(0) = dba;
-        bias_correction_vec.template segment<3>(3) = dbg;
-        
-        // Corrections to pre-integrated measurements using Jacobians
-        Eigen::Matrix<T, 9, 1> delta_bias_correction = jacobian_bias * bias_correction_vec;
-        
-        Eigen::Matrix<T, 3, 1> corrected_delta_p = delta_p + delta_bias_correction.template segment<3>(0);
-        Eigen::Matrix<T, 3, 1> corrected_delta_v = delta_v + delta_bias_correction.template segment<3>(3);
-        
-        // Correction to delta_q (orientation)
-        Eigen::Matrix<T, 3, 1> corrected_delta_q_vec = delta_bias_correction.template segment<3>(6);
-        
-        // Limit orientation correction magnitude
-        // const T max_angle_correction = T(0.1);  // radians
-        const T max_angle_correction = T(1.0);  // radians
-        T correction_norm = corrected_delta_q_vec.norm();
-        if (correction_norm > max_angle_correction) {
-            corrected_delta_q_vec *= (max_angle_correction / correction_norm);
-        }
-        
-        Eigen::Quaternion<T> corrected_delta_q = delta_q * deltaQ(corrected_delta_q_vec);
-        
-        // Gravity vector in world frame
-        // Gravity vector in world frame (in ENU, gravity is [0, 0, -9.81])
-        Eigen::Matrix<T, 3, 1> g = gravity_.cast<T>();
-        // ROS_INFO("g: %f %f %f", g(0), g(1), g(2));
-
-        // Compute residuals //changed by Yixin
-        Eigen::Map<Eigen::Matrix<T, 15, 1>> residual(residuals);
-
-        // Position residual - in ENU frame, g is already negative in Z-direction
-        residual.template segment<3>(0) = q_i.inverse() * ((p_j - p_i - v_i * sum_dt) + 
-                                                    T(0.5) * g * sum_dt * sum_dt) - corrected_delta_p;
-        // residual.template segment<3>(0) = q_i.inverse() * ((p_j - p_i - v_i * sum_dt)) - corrected_delta_p;
-        
-        // Orientation residual - IMPROVED with safer handling
-        Eigen::Quaternion<T> q_i_inverse_times_q_j = q_i.conjugate() * q_j;
-        Eigen::Quaternion<T> delta_q_residual = corrected_delta_q.conjugate() * q_i_inverse_times_q_j;
-        
-        // Normalize to ensure valid quaternion
-        delta_q_residual.normalize();
-        
-        // Use safer conversion to angle-axis
-        T dot_product = delta_q_residual.w();
-        // Make sure it's in valid range for acos
-        dot_product = ceres::abs(dot_product) < T(1.0) ? dot_product : 
-                     (dot_product > T(0.0) ? T(0.999999) : T(-0.999999));
-        
-        // Handle the case when rotation is nearly zero
-        if (dot_product > T(0.999999)) {
-            residual.template segment<3>(3).setZero();
-        } else {
-            T angle = T(2.0) * ceres::acos(dot_product);
-            Eigen::Matrix<T, 3, 1> axis;
-            
-            // Normalize axis safely
-            T vec_norm = delta_q_residual.vec().norm();
-            if (vec_norm > T(1e-10)) {
-                axis = delta_q_residual.vec() / vec_norm;
-            } else {
-                // If very small rotation, just use x-axis
-                axis = Eigen::Matrix<T, 3, 1>(T(1.0), T(0.0), T(0.0));
-            }
-            
-            residual.template segment<3>(3) = angle * axis;
-        }
-        
-        // Velocity residual
-        // residual.template segment<3>(6) = q_i.inverse() * (v_j - v_i - g * sum_dt) - corrected_delta_v;
-        residual.template segment<3>(6) = q_i.inverse() * (v_j - v_i + g * sum_dt) - corrected_delta_v;
-
-        // std::cout<<"velocity residuals->  "<<residual.template segment<3>(6)<<"\n";
-        
-        // CRITICAL: Bias change residuals - adjusted for high-speed scenario
-        // residual.template segment<3>(9) = (ba_j - ba_i) / T(0.002);   // Accelerometer bias change
-        // residual.template segment<3>(12) = (bg_j - bg_i) / T(0.0002); // Gyroscope bias change
-
-        // CRITICAL: Bias change residuals - adjusted for high-speed scenario
-        residual.template segment<3>(9) = (ba_j - ba_i) / T(1.0);   // Accelerometer bias change
-        residual.template segment<3>(12) = (bg_j - bg_i) / T(1.0); // Gyroscope bias change
-        
-        // Weight residuals by the information matrix
-        Eigen::Matrix<T, 9, 9> sqrt_information = preint_.covariance.cast<T>().inverse().llt().matrixL().transpose();
-        
-        // Scale the position, orientation, and velocity residuals
-        residual.template segment<3>(0) = sqrt_information.template block<3, 3>(0, 0) * residual.template segment<3>(0);
-        residual.template segment<3>(3) = sqrt_information.template block<3, 3>(3, 3) * residual.template segment<3>(3);
-        residual.template segment<3>(6) = sqrt_information.template block<3, 3>(6, 6) * residual.template segment<3>(6);
-        
-        return true;
-    }
-    
-    static ceres::CostFunction* Create(const ImuPreintegrationBetweenKeyframes& preint, 
-                                      const Eigen::Vector3d& gravity,
-                                      double bias_correction_threshold = 0.05) {
-        //yixin
-        return new ceres::AutoDiffCostFunction<ImuFactor, 15, 7, 3, 6, 7, 3, 6>(
-            new ImuFactor(preint, gravity, bias_correction_threshold));
-    }
-    
-private:
-    const ImuPreintegrationBetweenKeyframes preint_;
-    const Eigen::Vector3d gravity_;
-    const double bias_correction_threshold_;
-    
-    // Helper function to compute quaternion for small angle-axis rotation
-    template <typename T>
-    static Eigen::Quaternion<T> deltaQ(const Eigen::Matrix<T, 3, 1>& theta) {
-        T theta_norm = theta.norm();
-        
-        Eigen::Quaternion<T> dq;
-        if (theta_norm > T(1e-5)) {
-            Eigen::Matrix<T, 3, 1> a = theta / theta_norm;
-            dq = Eigen::Quaternion<T>(cos(theta_norm / T(2.0)), 
-                                    a.x() * sin(theta_norm / T(2.0)),
-                                    a.y() * sin(theta_norm / T(2.0)),
-                                    a.z() * sin(theta_norm / T(2.0)));
-        } else {
-            dq = Eigen::Quaternion<T>(T(1.0), theta.x() / T(2.0), theta.y() / T(2.0), theta.z() / T(2.0));
-            dq.normalize();
-        }
-        return dq;
-    }
-};
 
 // Main UWB/GPS-IMU fusion class
 class UwbImuFusion {
@@ -1912,12 +1594,12 @@ private:
     int optimization_count_;
     
     // IMU Preintegration between keyframes
-    typedef typename ImuFactor::ImuPreintegrationBetweenKeyframes ImuPreintegrationBetweenKeyframes;
+    // typedef typename ImuFactor::ImuPreintegrationBetweenKeyframes ImuPreintegrationBetweenKeyframes;
     std::map<std::pair<double, double>, imu_preint> preintegration_map_test;
     imu_preint current_preint_test;
     
     // Map to store preintegration data between consecutive keyframes
-    std::map<std::pair<double, double>, ImuPreintegrationBetweenKeyframes> preintegration_map_;
+    // std::map<std::pair<double, double>, ImuPreintegrationBetweenKeyframes> preintegration_map_;
     
     std::deque<sensor_msgs::Imu> imu_buffer_;
 
@@ -1983,7 +1665,7 @@ private:
         optimized_path_msg_.header.stamp = ros::Time(latest_state.timestamp); // 使用最新状态的时间戳
         optimized_path_msg_.poses.push_back(pose_stamped);
         
-        // // Limit path size (这段逻辑被注释掉了，按原样保留)
+        // // Limit path size 
         // if (optimized_path_msg_.poses.size() > 1000) {
         //     optimized_path_msg_.poses.erase(optimized_path_msg_.poses.begin());
         // }
@@ -2743,7 +2425,7 @@ private:
                 // Only add noise to every nth message to create visible outliers
                 static int msg_counter = 0;
 
-                if(msg_counter % 3== 0){
+                if(msg_counter % 1== 0){
                 
                 // Generate random noise
                 double noise_x = ((double)rand() / RAND_MAX * 2.0 - 1.0) * gps_noise_magnitude_;
@@ -3479,7 +3161,7 @@ private:
             uwb_measurements_.clear();
             gps_measurements_.clear();  // Clear GPS measurements
             imu_buffer_.clear();
-            preintegration_map_.clear();
+            // preintegration_map_.clear();
             preintegration_map_test.clear();
             
             // Reset GPS reference point
@@ -3811,9 +3493,7 @@ private:
                 double end_time = state_window_[n-1].timestamp;
                 
                 // Store preintegration data for optimization
-                performPreintegrationBetweenKeyframes(start_time, end_time, 
-                                                     state_window_[n-2].acc_bias, 
-                                                     state_window_[n-2].gyro_bias);
+                performPreintegrationBetweenKeyframes_(start_time, end_time);
             }
             
         } catch (const std::exception& e) {
@@ -4070,17 +3750,17 @@ private:
                     marginalization_info->addResidualBlockInfo(residual_info);
                 }
                 
-                // Add bias constraint
-                if (enable_bias_estimation_) {
-                    ceres::CostFunction* bias_constraint = BiasMagnitudeConstraint::Create(
-                        acc_bias_max_, gyro_bias_max_, bias_constraint_weight_);
-                    std::vector<double*> parameter_blocks = {bias_param1};
-                    std::vector<int> drop_set = {0}; // Drop the bias parameter
+                // // Add bias constraint
+                // if (enable_bias_estimation_) {
+                //     ceres::CostFunction* bias_constraint = BiasMagnitudeConstraint::Create(
+                //         acc_bias_max_, gyro_bias_max_, bias_constraint_weight_);
+                //     std::vector<double*> parameter_blocks = {bias_param1};
+                //     std::vector<int> drop_set = {0}; // Drop the bias parameter
                     
-                    auto* residual_info = new MarginalizationInfo::ResidualBlockInfo(
-                        bias_constraint, nullptr, parameter_blocks, drop_set);
-                    marginalization_info->addResidualBlockInfo(residual_info);
-                }
+                //     auto* residual_info = new MarginalizationInfo::ResidualBlockInfo(
+                //         bias_constraint, nullptr, parameter_blocks, drop_set);
+                //     marginalization_info->addResidualBlockInfo(residual_info);
+                // }
                 
                 // Perform pre-marginalization
                 marginalization_info->preMarginalize();
@@ -4136,573 +3816,7 @@ private:
             imu_acc_bias_noise_, imu_gyro_bias_noise_
         );
 
-        // try {
-        //     // 0. 输入有效性检查
-        //     if (start_time >= end_time) {
-        //         ROS_WARN("performPreintegrationBetweenKeyframes_ called with start_time (%.6f) >= end_time (%.6f). Skipping.", start_time, end_time);
-        //         return;
-        //     }
-
-        //     // // 1. 创建一个新的 imu_preint 对象用于当前的预积分段
-        //     // //    或者，如果你希望复用 current_preint_test_，确保在开始前正确重置并设置偏置
-        //     // imu_preint current_segment_preint; // 局部变量，每次调用都创建一个新的
-        //     // current_segment_preint.reset();
-        //     // current_segment_preint.setBias(acc_bias, gyro_bias);
-        //     // current_segment_preint.set_gravity(gravity_magnitude_); // Assuming gravity_magnitude_ is a member
-        //     // current_segment_preint.set_noise(imu_acc_noise_, imu_gyro_noise_,
-        //     //                                imu_acc_bias_noise_, imu_gyro_bias_noise_); // Assuming these are members
-
-        //     // 2. 从 imu_buffer_ 中搜集 start_time 和 end_time 之间的 IMU 数据
-        //     std::vector<sensor_msgs::Imu> relevant_imu_msgs;
-        //     relevant_imu_msgs.reserve(static_cast<size_t>((end_time - start_time) * 400 + 50)); // 假设IMU频率约为400Hz
-
-        //     // ROS_DEBUG("Searching for IMU data between %.6f and %.6f for preintegration.", start_time, end_time);
-        //     int imu_added_count = 0;
-        //     for (const auto& imu_msg : imu_buffer_) {
-        //         double imu_timestamp = imu_msg.header.stamp.toSec();
-        //         // 我们需要包含 start_time 之后 (但不完全等于start_time，因为第一帧的状态已经确定)
-        //         // 并且 小于或等于 end_time 的数据
-        //         // 在实际的VIO中，第一条IMU数据通常是用来初始化上一个状态到这个IMU数据点之间的预积分
-        //         // 这里我们假设start_time是上一个关键帧的时间戳，end_time是当前关键帧的时间戳
-        //         // 我们需要的是 (start_time, end_time] 这个区间的IMU数据
-        //         if (imu_timestamp > start_time && imu_timestamp <= end_time) {
-        //             relevant_imu_msgs.push_back(imu_msg);
-        //         }
-        //     }
-
-        //     // 如果没有找到相关的IMU数据
-        //     if (relevant_imu_msgs.empty()) {
-        //         ROS_WARN("No IMU messages found between %.6f and %.6f for preintegration.", start_time, end_time);
-        //         // 即使没有IMU数据，也可能需要存一个空的或者具有零时间间隔的预积分对象，
-        //         // 或者根据具体逻辑决定是否跳过。这里我们存一个空的。
-        // preintegration_map_test[std::make_pair(start_time, end_time)] = current_preint_test;
-        //         return;
-        //     }
-
-        //     // 对搜集到的IMU数据按时间戳排序 (imu_buffer_ 通常是已排序的，但以防万一)
-        //     std::sort(relevant_imu_msgs.begin(), relevant_imu_msgs.end(),
-        //               [](const sensor_msgs::Imu& a, const sensor_msgs::Imu& b) {
-        //                   return a.header.stamp.toSec() < b.header.stamp.toSec();
-        //               });
-
-        //     // 3. 将搜集到的 IMU 数据逐条 push_back 到 imu_preint 对象中
-        //     // 注意：imu_preint 的 push_back 应该处理时间戳和计算dt的逻辑
-        //     // 第一条IMU数据用于设置初始时间，后续数据用于积分
-        //     // 或者，imu_preint的push_back应该从第二个imu数据开始计算dt和积分
-
-        //     // 如果imu_preint的push_back期望第一个数据点不参与dt计算（仅作为时间基准），则直接全部push
-        //     for (const auto& imu_msg : relevant_imu_msgs) {
-        //         double unix_timestamp = imu_msg.header.stamp.toSec();
-        //         Eigen::Vector3d acc(imu_msg.linear_acceleration.x, imu_msg.linear_acceleration.y, imu_msg.linear_acceleration.z);
-        //         Eigen::Vector3d gyro(imu_msg.angular_velocity.x, imu_msg.angular_velocity.y, imu_msg.angular_velocity.z);
-                
-        //         // 确保imu_preint的push_back函数内部能正确处理第一个IMU数据和后续数据的积分
-        //         if (!current_preint_test.push_back(unix_timestamp, acc, gyro)) {
-        //             ROS_WARN("Failed to push_back IMU data at %.6f into preintegration object.", unix_timestamp);
-        //         } else {
-        //             imu_added_count++;
-        //         }
-        //     }
-            
-        //     // ROS_INFO("Added %d IMU messages to preintegration between %.6f and %.6f.", imu_added_count, start_time, end_time);
-
-        //     // 4. 将完成预积分的 imu_preint 对象存入 preintegration_map_test
-        //     preintegration_map_test[std::make_pair(start_time, end_time)] = current_preint_test;
-
-        //     // ROS_INFO("Preintegration data saved for keyframes: [%.6f, %.6f]. Delta_t: %.4f, Pos_Delta: [%.3f, %.3f, %.3f]",
-        //     //          start_time, end_time,
-        //     //          current_preint_test.get_sum_dt(),
-        //     //          current_preint_test.getDeltaAlpha().x(),
-        //     //          current_preint_test.getDeltaAlpha().y(),
-        //     //          current_preint_test.getDeltaAlpha().z());
-
-        //     current_preint_test.reset(); // 重置当前预积分对象以接受下一个关键帧的IMU数据
-
-        // } catch (const std::exception& e) {
-        //     ROS_ERROR("Exception in performPreintegrationBetweenKeyframes_: %s", e.what());
-        // }
-    }
-
-    // IMPROVED: Perform IMU pre-integration between keyframes with RK4 and bias random walk
-    void performPreintegrationBetweenKeyframes(double start_time, double end_time, 
-                                              const Eigen::Vector3d& acc_bias, 
-                                              const Eigen::Vector3d& gyro_bias) {
-        try {
-            // Create key for the map
-            std::pair<double, double> key(start_time, end_time);
-            
-            // Check if we already have this preintegration and bias hasn't changed significantly
-            if (preintegration_map_.find(key) != preintegration_map_.end()) {
-                const auto& existing = preintegration_map_[key];
-                
-                // Bias correction validity check - recompute if bias difference is large
-                Eigen::Vector3d dba = acc_bias - existing.acc_bias_ref;
-                Eigen::Vector3d dbg = gyro_bias - existing.gyro_bias_ref;
-                
-                if (dba.norm() < bias_correction_threshold_ && dbg.norm() < bias_correction_threshold_) {
-                    // Bias change is small enough to use linear approximation
-                    return;
-                }
-                
-                // Bias change is significant - we'll recompute with the new bias values
-                ROS_DEBUG("Recomputing pre-integration with new bias values (norm: acc=%.3f, gyro=%.3f)",
-                        dba.norm(), dbg.norm());
-            }
-            
-            // Ensure biases are within reasonable limits
-            Eigen::Vector3d clamped_acc_bias = acc_bias;
-            Eigen::Vector3d clamped_gyro_bias = gyro_bias;
-            clampBiases(clamped_acc_bias, clamped_gyro_bias);
-
-            // find the velocity of the start time,
-            
-            // Create new preintegration data
-            ImuPreintegrationBetweenKeyframes preint;
-            preint.reset();
-            preint.start_time = start_time;
-            preint.end_time = end_time;
-            preint.acc_bias_ref = clamped_acc_bias;
-            preint.gyro_bias_ref = clamped_gyro_bias;
-            
-            // Find relevant IMU measurements with time tolerance for bag playback
-            preint.imu_measurements.reserve(static_cast<size_t>((end_time - start_time) * 400 + 50)); // Reserve for 400Hz + buffer
-            const double time_tolerance = 0.02; // 20ms tolerance
-            
-            // For bag playback, log the timespan we're searching for
-            if (!imu_buffer_.empty()) {
-                double buffer_start = imu_buffer_.front().header.stamp.toSec();
-                double buffer_end = imu_buffer_.back().header.stamp.toSec();
-                
-                ROS_DEBUG("Looking for IMU data between %.6f and %.6f (span %.3f sec). IMU buffer covers [%.6f to %.6f] (span %.3f sec, %zu msgs)", 
-                        start_time, end_time, end_time - start_time,
-                        buffer_start, buffer_end, buffer_end - buffer_start,
-                        imu_buffer_.size());
-            }
-            
-            // Count IMU measurements in different parts of the time range for diagnostics
-            int count_before_start = 0;
-            int count_in_range = 0;
-            int count_after_end = 0;
-            double earliest_found = std::numeric_limits<double>::max();
-            double latest_found = 0;
-            
-            for (const auto& imu : imu_buffer_) {
-                double timestamp = imu.header.stamp.toSec();
-                
-                if (timestamp < (start_time - time_tolerance)) {
-                    count_before_start++;
-                } else if (timestamp > (end_time + time_tolerance)) {
-                    count_after_end++;
-                } else {
-                    count_in_range++;
-                    preint.imu_measurements.push_back(imu);
-                    
-                    // Track the time range of found measurements
-                    if (timestamp < earliest_found) earliest_found = timestamp;
-                    if (timestamp > latest_found) latest_found = timestamp;
-                }
-            }
-            
-            // Report detailed IMU data distribution for debugging
-            if (count_in_range > 0) {
-                ROS_DEBUG("Found %d IMU measurements between %.6f and %.6f. Actual range: [%.6f to %.6f]", 
-                        count_in_range, start_time, end_time, earliest_found, latest_found);
-            } else {
-                ROS_WARN("No IMU data found between %.6f and %.6f. Buffer has %d msgs before and %d msgs after this range", 
-                        start_time, end_time, count_before_start, count_after_end);
-            }
-            
-            // If no IMU data found, create synthetic data
-            if (preint.imu_measurements.empty()) {
-                ROS_WARN("No IMU data found between %.6f and %.6f, creating synthetic IMU data", start_time, end_time);
-                // Provide better diagnostics about what's in the buffer
-                if (!imu_buffer_.empty()) {
-                    double buffer_start = imu_buffer_.front().header.stamp.toSec();
-                    double buffer_end = imu_buffer_.back().header.stamp.toSec();
-                    
-                    // *********************************************************** //
-                    ROS_WARN("IMU buffer doesn't cover the required timespan: buffer [%.6f to %.6f], requested [%.6f to %.6f]",
-                          buffer_start, buffer_end, start_time, end_time);
-                    
-                    // Print some sample timestamps around the desired range
-                    ROS_INFO("Sample of available IMU timestamps:");
-                    int samples_printed = 0;
-                    for (const auto& imu : imu_buffer_) {
-                        if (samples_printed >= 10) break;
-                        if (std::abs(imu.header.stamp.toSec() - start_time) < 0.5 || 
-                            std::abs(imu.header.stamp.toSec() - end_time) < 0.5) {
-                            ROS_INFO("  IMU timestamp: %.6f", imu.header.stamp.toSec());
-                            samples_printed++;
-                        }
-                    }
-                }
-                
-                // IMPROVED: Create better synthetic IMU data
-                // Calculate time between keyframes
-                double dt = end_time - start_time;
-                int num_synthetic = std::max(10, static_cast<int>(dt * 400.0));
-                
-                // Get reference points for interpolation
-                State start_state;
-                State end_state;
-                bool found_start = false;
-                bool found_end = false;
-                
-                // Find states closest to the boundaries
-                for (const auto& state : state_window_) {
-                    if (std::abs(state.timestamp - start_time) < 0.05) {
-                        start_state = state;
-                        found_start = true;
-                    }
-                    if (std::abs(state.timestamp - end_time) < 0.05) {
-                        end_state = state;
-                        found_end = true;
-                    }
-                }
-                
-                // If we have both boundary states, create more realistic synthetic data
-                if (found_start && found_end) {
-                    ROS_INFO("Creating realistic synthetic IMU from boundary states");
-                    
-                    // Get orientation and velocity differences
-                    Eigen::Quaterniond delta_q = start_state.orientation.inverse() * end_state.orientation;
-                    Eigen::Vector3d delta_v = end_state.velocity - start_state.velocity;
-                    
-                    // Generate synthetic measurements with realistic motion
-                    for (int i = 0; i < num_synthetic; i++) {
-                        double fraction = static_cast<double>(i) / (num_synthetic - 1);
-                        double synthetic_time = start_time + fraction * dt;
-                        
-                        // Create synthetic IMU measurement
-                        sensor_msgs::Imu synthetic_imu;
-                        synthetic_imu.header.stamp = ros::Time(synthetic_time);
-                        
-                        // Interpolate orientation (slerp)
-                        Eigen::Quaterniond interp_q = start_state.orientation.slerp(fraction, end_state.orientation);
-                        
-                        // Interpolate velocity (linear)
-                        Eigen::Vector3d interp_v = start_state.velocity + fraction * delta_v;
-                        
-                        // Get gravity in sensor frame
-                        Eigen::Vector3d gravity_sensor = interp_q.inverse() * gravity_world_;
-                        
-                        // Set realistic accelerometer readings (gravity plus acceleration)
-                        // For acceleration, use velocity change over time
-                        Eigen::Vector3d accel = delta_v / dt;
-                        Eigen::Vector3d accel_sensor = interp_q.inverse() * accel;
-                        
-                        synthetic_imu.linear_acceleration.x = accel_sensor.x() - gravity_sensor.x();
-                        synthetic_imu.linear_acceleration.y = accel_sensor.y() - gravity_sensor.y();
-                        synthetic_imu.linear_acceleration.z = accel_sensor.z() - gravity_sensor.z();
-                        
-                        // Set angular velocity based on orientation change
-                        double angle;
-                        Eigen::Vector3d axis;
-                        Eigen::AngleAxisd angle_axis(delta_q);
-                        angle = angle_axis.angle();
-                        axis = angle_axis.axis();
-                        
-                        Eigen::Vector3d angular_velocity = axis * (angle / dt);
-                        Eigen::Vector3d gyro_sensor = interp_q.inverse() * angular_velocity;
-                        
-                        synthetic_imu.angular_velocity.x = gyro_sensor.x();
-                        synthetic_imu.angular_velocity.y = gyro_sensor.y();
-                        synthetic_imu.angular_velocity.z = gyro_sensor.z();
-                        
-                        preint.imu_measurements.push_back(synthetic_imu);
-                    }
-                } else {
-                    // Get orientation at start time for gravity direction
-                    Eigen::Quaterniond start_orientation = Eigen::Quaterniond::Identity();
-                    for (const auto& state : state_window_) {
-                        if (std::abs(state.timestamp - start_time) < 0.05) {
-                            start_orientation = state.orientation;
-                            break;
-                        }
-                    }
-                    
-                    // Transform gravity to sensor frame
-                    Eigen::Vector3d gravity_sensor = start_orientation.inverse() * gravity_world_;
-
-                    std::cout<<"gravity_sensor-> -------------" << gravity_sensor<<"\n";
-                    
-                    // Create synthetic measurements evenly spaced
-                    for (int i = 0; i < num_synthetic; i++) {
-                        double fraction = static_cast<double>(i) / (num_synthetic - 1);
-                        double synthetic_time = start_time + fraction * dt;
-                        
-                        // Create synthetic IMU measurement
-                        sensor_msgs::Imu synthetic_imu;
-                        synthetic_imu.header.stamp = ros::Time(synthetic_time);
-                        
-                        // Set to gravity-only with zero angular velocity as a fallback
-                        synthetic_imu.linear_acceleration.x = -gravity_sensor.x();
-                        synthetic_imu.linear_acceleration.y = -gravity_sensor.y();
-                        synthetic_imu.linear_acceleration.z = -gravity_sensor.z();
-                        
-                        synthetic_imu.angular_velocity.x = 0;
-                        synthetic_imu.angular_velocity.y = 0;
-                        synthetic_imu.angular_velocity.z = 0;
-                        
-                        preint.imu_measurements.push_back(synthetic_imu);
-                    }
-                }
-                
-                ROS_INFO("Created %d synthetic IMU measurements between %.6f and %.6f",
-                       (int)preint.imu_measurements.size(), start_time, end_time);
-            }
-            
-            // Sort IMU measurements by timestamp
-            if (preint.imu_measurements.size() > 1) {
-                std::sort(preint.imu_measurements.begin(), preint.imu_measurements.end(), 
-                         [](const sensor_msgs::Imu& a, const sensor_msgs::Imu& b) {
-                             return a.header.stamp.toSec() < b.header.stamp.toSec();
-                         });
-            }
-            
-            // Initialize integration variables
-            double prev_time = start_time;
-            preint.sum_dt = 0;
-            
-            // Get orientation at start time
-            Eigen::Quaterniond current_orientation = Eigen::Quaterniond::Identity();
-            Eigen::Vector3d current_velocity  = Eigen::Vector3d::Zero();
-            State current_state;
-            for (const auto& state : state_window_) {
-                if (std::abs(state.timestamp - start_time) < 0.005) {
-                    current_velocity = state.velocity;
-                    current_orientation = state.orientation;
-                    current_state = state;
-                    break;
-                }
-            }
-            
-            // Precompute IMU noise matrix
-            Eigen::Matrix<double, 6, 6> noise_cov = Eigen::Matrix<double, 6, 6>::Identity() * 1e-8;
-            noise_cov.block<3, 3>(0, 0) = Eigen::Matrix3d::Identity() * imu_acc_noise_ * imu_acc_noise_;
-            noise_cov.block<3, 3>(3, 3) = Eigen::Matrix3d::Identity() * imu_gyro_noise_ * imu_gyro_noise_;
-            
-            // Add bias random walk noise (continuous-time)
-            Eigen::Matrix<double, 6, 6> bias_noise_cov = Eigen::Matrix<double, 6, 6>::Zero();
-            bias_noise_cov.block<3, 3>(0, 0) = Eigen::Matrix3d::Identity() * imu_acc_bias_noise_ * imu_acc_bias_noise_;
-            bias_noise_cov.block<3, 3>(3, 3) = Eigen::Matrix3d::Identity() * imu_gyro_bias_noise_ * imu_gyro_bias_noise_;
-            
-            // Process each IMU measurement
-            for (size_t i = 0; i < preint.imu_measurements.size(); ++i) {
-                // Get current IMU data
-                const auto& imu_msg = preint.imu_measurements[i];
-                double timestamp = imu_msg.header.stamp.toSec();
-                double dt = timestamp - prev_time;
-                
-                // Skip invalid time differences
-                if (dt <= min_integration_dt_ || dt > max_imu_dt_) {
-                    prev_time = timestamp;
-                    continue;
-                }
-                
-                // Subdivide large time steps for numerical stability
-                int num_steps = 1;
-                double step_dt = dt;
-                if (dt > max_integration_dt_) {
-                    num_steps = std::max(2, static_cast<int>(std::ceil(dt / max_integration_dt_)));
-                    step_dt = dt / num_steps;
-                }
-                
-                // Extract current IMU data
-                Eigen::Vector3d acc1(
-                    imu_msg.linear_acceleration.x,
-                    imu_msg.linear_acceleration.y,
-                    imu_msg.linear_acceleration.z
-                );
-                
-                Eigen::Vector3d gyro1(
-                    imu_msg.angular_velocity.x,
-                    imu_msg.angular_velocity.y,
-                    imu_msg.angular_velocity.z
-                );
-                
-                // Get next IMU data for interpolation (if available)
-                Eigen::Vector3d acc2 = acc1;
-                Eigen::Vector3d gyro2 = gyro1;
-                
-                if (i < preint.imu_measurements.size() - 1) {
-                    const auto& next_imu = preint.imu_measurements[i + 1];
-                    acc2 = Eigen::Vector3d(
-                        next_imu.linear_acceleration.x,
-                        next_imu.linear_acceleration.y,
-                        next_imu.linear_acceleration.z
-                    );
-                    
-                    gyro2 = Eigen::Vector3d(
-                        next_imu.angular_velocity.x,
-                        next_imu.angular_velocity.y,
-                        next_imu.angular_velocity.z
-                    );
-                }
-                
-                // Apply bias correction
-                acc1 -= clamped_acc_bias;
-                acc2 -= clamped_acc_bias;
-                gyro1 -= clamped_gyro_bias;
-                gyro2 -= clamped_gyro_bias;
-                
-                // Integrate across subdivided steps
-                for (int step = 0; step < num_steps; step++) {
-                    // Linear interpolation for IMU data
-                    double alpha = static_cast<double>(step) / num_steps;
-                    double beta = static_cast<double>(step + 1) / num_steps;
-                    
-                    Eigen::Vector3d acc_step1 = acc1 * (1.0 - alpha) + acc2 * alpha;
-                    Eigen::Vector3d acc_step2 = acc1 * (1.0 - beta) + acc2 * beta;
-                    Eigen::Vector3d gyro_step1 = gyro1 * (1.0 - alpha) + gyro2 * alpha;
-                    Eigen::Vector3d gyro_step2 = gyro1 * (1.0 - beta) + gyro2 * beta;
-                    
-                    // Store delta orientation before update
-                    Eigen::Quaterniond delta_q_old = preint.delta_orientation;
-                    
-                    // Integrate delta quaternion (rotation)
-                    Eigen::Vector3d gyro_avg = (gyro_step1 + gyro_step2) * 0.5;
-                    Eigen::Vector3d integrated_gyro = (gyro_step1 + gyro_step2) * 0.5 * step_dt;
-                    Eigen::Quaterniond delta_q = Eigen::Quaterniond::Identity();
-                    
-                    // if (integrated_gyro.norm() > 1e-8) {
-                    //     delta_q = Eigen::Quaterniond(
-                    //         Eigen::AngleAxisd(integrated_gyro.norm(), integrated_gyro.normalized())
-                    //     );
-                    // }
-
-                    if(gyro_avg.norm() > 1e-8) {
-                        // print out the norm of gyro_avg
-                        delta_q = Eigen::Quaterniond(1.0, 0.5 * gyro_avg[0] * step_dt, 0.5 * gyro_avg[1] * step_dt, 0.5 * gyro_avg[2] * step_dt);
-                    }
-
-                    // Update preintegrated delta orientation
-                    preint.delta_orientation = preint.delta_orientation * delta_q;
-                    preint.delta_orientation.normalize();
-                    
-                    // Compute half-point rotation for midpoint integration
-                    Eigen::Quaterniond delta_q_half = delta_q_old.slerp(0.5, preint.delta_orientation);
-                    delta_q_half.normalize();
-                    Eigen::Quaterniond q_half = current_orientation * delta_q_half;
-                    q_half.normalize();
-                    
-                    // Get gravity in sensor frame based on current orientation
-                    Eigen::Vector3d gravity_sensor = current_orientation.inverse() * gravity_world_;
-                    
-                    // Remove gravity from accelerometers (gravity is already in sensor frame)
-                    Eigen::Vector3d acc_without_gravity1 = acc_step1 + gravity_sensor;
-                    Eigen::Vector3d acc_without_gravity2 = acc_step2 + gravity_sensor;
-
-                    // ROS_INFO("IMU pre-integration gravity compensation: acc1=[%.2f, %.2f, %.2f], gravity_sensor=[%.2f, %.2f, %.2f], acc_no_g1=[%.2f, %.2f, %.2f]",
-                    //     acc_step1.x(), acc_step1.y(), acc_step1.z(),
-                    //     gravity_sensor.x(), gravity_sensor.y(), gravity_sensor.z(),
-                    //     acc_without_gravity1.x(), acc_without_gravity1.y(), acc_without_gravity1.z());
-                    
-                    // Rotate accelerations to integration frame
-                    Eigen::Vector3d acc_int_frame1 = delta_q_half * acc_without_gravity1;
-                    Eigen::Vector3d acc_int_frame2 = delta_q_half * acc_without_gravity2;
-
-                    // Eigen::Vector3d acc_int_frame1_ = delta_q_half.inverse() * acc_step1;
-                    // Eigen::Vector3d acc_int_frame2_ = delta_q_half.inverse() * acc_step2;
-                    
-                    // Integrate velocity using midpoint rule
-                    Eigen::Vector3d acc_integrated = (acc_int_frame1 + acc_int_frame2) * 0.5;
-                    // Eigen::Vector3d acc_integrated_ = (acc_int_frame1_ + acc_int_frame2_) * 0.5;
-                    Eigen::Vector3d vel_old = preint.delta_velocity;
-                    preint.delta_velocity += acc_integrated * step_dt;
-                    // preint.delta_velocity += acc_integrated_ * step_dt;
-                    
-                    // Integrate position using midpoint rule with current velocity
-                    Eigen::Vector3d vel_midpoint = preint.delta_velocity - 0.5 * acc_integrated * step_dt;
-                    // Eigen::Vector3d vel_midpoint = preint.delta_velocity - 0.5 * acc_integrated_ * step_dt;
-                    // preint.delta_position += vel_midpoint * step_dt;
-                    preint.delta_position += vel_old * step_dt + 0.5 * acc_integrated * step_dt * step_dt;
-                    // preint.delta_position += vel_old * step_dt + 0.5 * acc_integrated_ * step_dt * step_dt;
-
-                    // Update covariance and Jacobians
-                    // Calculate Jacobians for noise propagation
-                    Eigen::Matrix<double, 9, 9> F = Eigen::Matrix<double, 9, 9>::Identity();
-                    F.block<3, 3>(0, 3) = Eigen::Matrix3d::Identity() * step_dt;
-                    F.block<3, 3>(3, 6) = delta_q_half.toRotationMatrix() * step_dt;
-                    F.block<3, 3>(0, 6) = 0.5 * delta_q_half.toRotationMatrix() * step_dt * step_dt;
-                    
-                    // Noise propagation matrix
-                    Eigen::Matrix<double, 9, 6> G = Eigen::Matrix<double, 9, 6>::Zero();
-                    G.block<3, 3>(3, 0) = delta_q_half.toRotationMatrix();
-                    G.block<3, 3>(6, 3) = Eigen::Matrix3d::Identity();
-                    
-                    // Bias Jacobians
-                    Eigen::Matrix<double, 9, 6> dF_db = Eigen::Matrix<double, 9, 6>::Zero();
-                    
-                    // Jacobian for accelerometer bias
-                    dF_db.block<3, 3>(0, 0) = -0.5 * delta_q_half.toRotationMatrix() * step_dt * step_dt;
-                    dF_db.block<3, 3>(3, 0) = -delta_q_half.toRotationMatrix() * step_dt;
-                    
-                    // Jacobian for gyroscope bias
-                    Eigen::Matrix3d dR_dbg_times_a = -step_dt * skewSymmetric(delta_q_half * acc_without_gravity1);
-                    dF_db.block<3, 3>(0, 3) = 0.5 * dR_dbg_times_a * step_dt;
-                    dF_db.block<3, 3>(3, 3) = dR_dbg_times_a;
-                    dF_db.block<3, 3>(6, 3) = -step_dt * Eigen::Matrix3d::Identity();
-                    
-                    // Update the Jacobian for bias
-                    preint.jacobian_bias = F * preint.jacobian_bias + dF_db;
-                    
-                    // Add bias random walk for the specific time step
-                    Eigen::Matrix<double, 6, 6> current_bias_cov = bias_noise_cov * step_dt;
-                    
-                    // Update the covariance
-                    preint.covariance = F * preint.covariance * F.transpose() + 
-                      G * noise_cov * G.transpose();
-                    
-                    // Add bias random walk contribution to the propagated noise
-                    Eigen::Matrix<double, 9, 6> bias_noise_mapping = preint.jacobian_bias;
-                    preint.covariance += bias_noise_mapping * current_bias_cov * bias_noise_mapping.transpose();
-                    
-                    // Update sum of dt for diagnostics
-                    preint.sum_dt += step_dt;
-                }
-                
-                // Update time tracking
-                prev_time = timestamp;
-            }
-            
-            // Check if integration covered the full time range
-            double expected_dt = end_time - start_time;
-            if (std::abs(preint.sum_dt - expected_dt) > 0.01) {
-                ROS_WARN("Integration did not cover full time range. Expected dt=%.3f, got dt=%.3f", 
-                      expected_dt, preint.sum_dt);
-            }
-            
-            // Ensure numerical stability of covariance
-            for (int i = 0; i < 9; ++i) {
-                preint.covariance(i, i) = std::max(preint.covariance(i, i), 1e-8);
-            }
-            
-            // // Print diagnostics
-            ROS_INFO("Preintegration [%.3f-%.3f] dt=%.3f: dp=[%.3f,%.3f,%.3f], dv=[%.3f,%.3f,%.3f], IMU count=%d",
-                    start_time, end_time, preint.sum_dt,
-                    preint.delta_position.x(), preint.delta_position.y(), preint.delta_position.z(),
-                    preint.delta_velocity.x(), preint.delta_velocity.y(), preint.delta_velocity.z(),
-                    (int)preint.imu_measurements.size());
-            // print the moved distance magnitude, the velcity magnitude and the time
-            // ROS_INFO("Preintegration dt=%.3f: dp=%.3f, dv=%.3f ",
-            //         preint.sum_dt,
-            //         preint.delta_position.norm(),
-            //         preint.delta_velocity.norm());
-
-            // print more information including the state especially the velocity of current state, and orientation
-            ROS_INFO("Current State: Pos [%.2f, %.2f, %.2f] | Vel [%.2f, %.2f, %.2f] | Quat [%.2f, %.2f, %.2f, %.2f] def]",
-                current_state.position.x(), current_state.position.y(), current_state.position.z(),
-                current_state.velocity.x(), current_state.velocity.y(), current_state.velocity.z(),
-                current_state.orientation.w(), current_state.orientation.x(), current_state.orientation.y(), current_state.orientation.z()
-            );
-            
-            // Store in map
-            preintegration_map_[key] = preint;
-            
-        } catch (const std::exception& e) {
-            ROS_ERROR("Exception in performPreintegrationBetweenKeyframes: %s", e.what());
-        }
+        
     }
 
     void optimizationTimerCallback(const ros::TimerEvent& event) {
@@ -4881,7 +3995,7 @@ private:
         }
         
         current_state_ = reset_state;
-        preintegration_map_.clear();
+        preintegration_map_test.clear();
         
         // Reset marginalization as well
         if (last_marginalization_info_) {
@@ -4980,7 +4094,7 @@ private:
         current_state_ = reset_state;
         
         // Recompute preintegration with new bias values
-        preintegration_map_.clear();
+        preintegration_map_test.clear();
         
         // Reset marginalization as well
         if (last_marginalization_info_) {
@@ -5203,7 +4317,6 @@ private:
                                     gps.velocity, gps_velocity_noise_);
                                 
                                 problem.AddResidualBlock(gps_vel_factor, NULL, variables[i].velocity);
-                                std::cout<<"Add velocity factor if configured to use GPS velocity---------------------------\n";
                             }
                             
                             // // Add orientation factor if configured to use GPS orientation as constraint
@@ -5390,9 +4503,12 @@ private:
                 // CRITICAL: Always use exactly 6 parameter blocks in the exact order expected
                 // Adding the residual block with state variables in the correct order, without checks
                 if (state_window_.size() >= 2) {
+                    // problem.AddResidualBlock(factor, nullptr,
+                    //                        variables[1].pose, variables[1].velocity, variables[1].bias,
+                    //                        variables[0].pose, variables[0].velocity, variables[0].bias);
                     problem.AddResidualBlock(factor, nullptr,
-                                           variables[1].pose, variables[1].velocity, variables[1].bias,
-                                           variables[0].pose, variables[0].velocity, variables[0].bias);
+                                           variables[0].pose, variables[0].velocity, variables[0].bias,
+                                           variables[1].pose, variables[1].velocity, variables[1].bias);
                 }
             }
             
@@ -5412,7 +4528,7 @@ private:
             // add output for debug use
             // options.minimizer_progress_to_stdout = false;
             // options.minimizer_progress_to_stdout = true;
-            options.num_threads = 8;
+            options.num_threads = 16;
 
             // // //compare with auto computed jacobian
             // options.check_gradients = true;
@@ -5485,11 +4601,11 @@ private:
 
             // std::cout << summary.FullReport() << std::endl;
 
-            // output the state window after optimization
-            for (size_t i = 0; i < variables.size(); ++i) {
-            //     ROS_INFO("Optimized state %zu: [%.2f, %.2f, %.2f]", i, variables[i].pose[0], variables[i].pose[1], variables[i].pose[2]);
-            ROS_INFO("Optimized state velocity %zu: [%.2f, %.2f, %.2f]", i, variables[i].velocity[0], variables[i].velocity[1], variables[i].velocity[2]);
-            }
+            // // output the state window after optimization
+            // for (size_t i = 0; i < variables.size(); ++i) {
+            // //     ROS_INFO("Optimized state %zu: [%.2f, %.2f, %.2f]", i, variables[i].pose[0], variables[i].pose[1], variables[i].pose[2]);
+            // ROS_INFO("Optimized state velocity %zu: [%.2f, %.2f, %.2f]", i, variables[i].velocity[0], variables[i].velocity[1], variables[i].velocity[2]);
+            // }
                 
             
             // Update state with optimized values
