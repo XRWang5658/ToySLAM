@@ -561,145 +561,146 @@ private:
 
 // ==================== MARGINALIZATION CLASSES ====================
 
+    // Structure to hold residual block information
+struct ResidualBlockInfo {
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+    
+    ResidualBlockInfo(ceres::CostFunction* _cost_function, 
+                        ceres::LossFunction* _loss_function,
+                        std::vector<double*>& _parameter_blocks,
+                        std::vector<int>& _drop_set)
+        : cost_function(_cost_function), loss_function(_loss_function),
+            parameter_blocks(_parameter_blocks), drop_set(_drop_set) {
+        
+        // Calculate sizes
+        num_residuals = cost_function->num_residuals();
+        parameter_block_sizes.clear();
+        
+        for (int i = 0; i < static_cast<int>(parameter_blocks.size()); i++) {
+            parameter_block_sizes.push_back(cost_function->parameter_block_sizes()[i]);
+        }
+        
+        // Allocate memory
+        raw_jacobians = new double*[parameter_blocks.size()];
+        jacobians.resize(parameter_blocks.size());
+        
+        for (int i = 0; i < static_cast<int>(parameter_blocks.size()); i++) {
+            jacobians[i].resize(num_residuals, parameter_block_sizes[i]);
+            jacobians[i].setZero();
+        }
+        
+        residuals.resize(num_residuals);
+        residuals.setZero();
+    }
+    
+    ~ResidualBlockInfo() {
+        delete[] raw_jacobians;
+        
+        // Only delete the cost function if we own it
+        if (cost_function) {
+            delete cost_function;
+            cost_function = nullptr;
+        }
+            
+        // Only delete the loss function if we own it  
+        if (loss_function) {
+            delete loss_function;
+            loss_function = nullptr;
+        }
+    }
+    
+    void Evaluate() {
+        // Skip evaluation if we don't have all parameters
+        if (parameter_blocks_data.size() != parameter_blocks.size()) {
+            ROS_WARN("Parameter blocks data size mismatch in Evaluate()");
+            return;
+        }
+        
+        // Allocate memory for parameters and residuals
+        double** parameters = new double*[parameter_blocks.size()];
+        for (int i = 0; i < static_cast<int>(parameter_blocks.size()); i++) {
+            parameters[i] = parameter_blocks_data[i];
+            raw_jacobians[i] = new double[num_residuals * parameter_block_sizes[i]];
+            memset(raw_jacobians[i], 0, sizeof(double) * num_residuals * parameter_block_sizes[i]);
+        }
+        
+        double* raw_residuals = new double[num_residuals];
+        memset(raw_residuals, 0, sizeof(double) * num_residuals);
+        
+        // Evaluate the cost function
+        cost_function->Evaluate(parameters, raw_residuals, raw_jacobians);
+        
+        // Apply loss function if needed
+        if (loss_function) {
+            double residual_scaling = 1.0;
+            double alpha_sq_norm = 0.0;
+            
+            for (int i = 0; i < num_residuals; i++) {
+                alpha_sq_norm += raw_residuals[i] * raw_residuals[i];
+            }
+            
+            double sqrt_rho1 = 1.0;
+            if (alpha_sq_norm > 0) {
+                double rho[3];
+                loss_function->Evaluate(alpha_sq_norm, rho);
+                sqrt_rho1 = sqrt(rho[1]);
+                
+                if (sqrt_rho1 == 0) {
+                    residual_scaling = 0.0;
+                } else {
+                    residual_scaling = sqrt_rho1 / alpha_sq_norm;
+                }
+            }
+            
+            for (int i = 0; i < num_residuals; i++) {
+                raw_residuals[i] *= sqrt_rho1;
+            }
+            
+            for (int i = 0; i < static_cast<int>(parameter_blocks.size()); i++) {
+                for (int j = 0; j < parameter_block_sizes[i] * num_residuals; j++) {
+                    raw_jacobians[i][j] *= residual_scaling;
+                }
+            }
+        }
+        
+        // Copy raw residuals to Eigen vector
+        for (int i = 0; i < num_residuals; i++) {
+            residuals(i) = raw_residuals[i];
+        }
+        
+        // Copy raw jacobians to Eigen matrices
+        for (int i = 0; i < static_cast<int>(parameter_blocks.size()); i++) {
+            Eigen::Map<Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> 
+                mat_jacobian(raw_jacobians[i], num_residuals, parameter_block_sizes[i]);
+            jacobians[i] = mat_jacobian;
+        }
+        
+        // Clean up
+        for (int i = 0; i < static_cast<int>(parameter_blocks.size()); i++) {
+            delete[] raw_jacobians[i];
+        }
+        delete[] parameters;
+        delete[] raw_residuals;
+    }
+    
+    ceres::CostFunction* cost_function;
+    ceres::LossFunction* loss_function;
+    std::vector<double*> parameter_blocks;
+    std::vector<int> parameter_block_sizes;
+    int num_residuals;
+    std::vector<int> drop_set;
+    
+    std::vector<double*> parameter_blocks_data;
+    double** raw_jacobians;
+    std::vector<Eigen::MatrixXd> jacobians;
+    Eigen::VectorXd residuals;
+};
+
+
 // Marginalization information class - handles Schur complement
 class MarginalizationInfo {
 public:
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
-    
-    // Structure to hold residual block information
-    struct ResidualBlockInfo {
-        EIGEN_MAKE_ALIGNED_OPERATOR_NEW
-        
-        ResidualBlockInfo(ceres::CostFunction* _cost_function, 
-                         ceres::LossFunction* _loss_function,
-                         std::vector<double*>& _parameter_blocks,
-                         std::vector<int>& _drop_set)
-            : cost_function(_cost_function), loss_function(_loss_function),
-              parameter_blocks(_parameter_blocks), drop_set(_drop_set) {
-            
-            // Calculate sizes
-            num_residuals = cost_function->num_residuals();
-            parameter_block_sizes.clear();
-            
-            for (int i = 0; i < static_cast<int>(parameter_blocks.size()); i++) {
-                parameter_block_sizes.push_back(cost_function->parameter_block_sizes()[i]);
-            }
-            
-            // Allocate memory
-            raw_jacobians = new double*[parameter_blocks.size()];
-            jacobians.resize(parameter_blocks.size());
-            
-            for (int i = 0; i < static_cast<int>(parameter_blocks.size()); i++) {
-                jacobians[i].resize(num_residuals, parameter_block_sizes[i]);
-                jacobians[i].setZero();
-            }
-            
-            residuals.resize(num_residuals);
-            residuals.setZero();
-        }
-        
-        ~ResidualBlockInfo() {
-            delete[] raw_jacobians;
-            
-            // Only delete the cost function if we own it
-            if (cost_function) {
-                delete cost_function;
-                cost_function = nullptr;
-            }
-                
-            // Only delete the loss function if we own it  
-            if (loss_function) {
-                delete loss_function;
-                loss_function = nullptr;
-            }
-        }
-        
-        void Evaluate() {
-            // Skip evaluation if we don't have all parameters
-            if (parameter_blocks_data.size() != parameter_blocks.size()) {
-                ROS_WARN("Parameter blocks data size mismatch in Evaluate()");
-                return;
-            }
-            
-            // Allocate memory for parameters and residuals
-            double** parameters = new double*[parameter_blocks.size()];
-            for (int i = 0; i < static_cast<int>(parameter_blocks.size()); i++) {
-                parameters[i] = parameter_blocks_data[i];
-                raw_jacobians[i] = new double[num_residuals * parameter_block_sizes[i]];
-                memset(raw_jacobians[i], 0, sizeof(double) * num_residuals * parameter_block_sizes[i]);
-            }
-            
-            double* raw_residuals = new double[num_residuals];
-            memset(raw_residuals, 0, sizeof(double) * num_residuals);
-            
-            // Evaluate the cost function
-            cost_function->Evaluate(parameters, raw_residuals, raw_jacobians);
-            
-            // Apply loss function if needed
-            if (loss_function) {
-                double residual_scaling = 1.0;
-                double alpha_sq_norm = 0.0;
-                
-                for (int i = 0; i < num_residuals; i++) {
-                    alpha_sq_norm += raw_residuals[i] * raw_residuals[i];
-                }
-                
-                double sqrt_rho1 = 1.0;
-                if (alpha_sq_norm > 0) {
-                    double rho[3];
-                    loss_function->Evaluate(alpha_sq_norm, rho);
-                    sqrt_rho1 = sqrt(rho[1]);
-                    
-                    if (sqrt_rho1 == 0) {
-                        residual_scaling = 0.0;
-                    } else {
-                        residual_scaling = sqrt_rho1 / alpha_sq_norm;
-                    }
-                }
-                
-                for (int i = 0; i < num_residuals; i++) {
-                    raw_residuals[i] *= sqrt_rho1;
-                }
-                
-                for (int i = 0; i < static_cast<int>(parameter_blocks.size()); i++) {
-                    for (int j = 0; j < parameter_block_sizes[i] * num_residuals; j++) {
-                        raw_jacobians[i][j] *= residual_scaling;
-                    }
-                }
-            }
-            
-            // Copy raw residuals to Eigen vector
-            for (int i = 0; i < num_residuals; i++) {
-                residuals(i) = raw_residuals[i];
-            }
-            
-            // Copy raw jacobians to Eigen matrices
-            for (int i = 0; i < static_cast<int>(parameter_blocks.size()); i++) {
-                Eigen::Map<Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> 
-                    mat_jacobian(raw_jacobians[i], num_residuals, parameter_block_sizes[i]);
-                jacobians[i] = mat_jacobian;
-            }
-            
-            // Clean up
-            for (int i = 0; i < static_cast<int>(parameter_blocks.size()); i++) {
-                delete[] raw_jacobians[i];
-            }
-            delete[] parameters;
-            delete[] raw_residuals;
-        }
-        
-        ceres::CostFunction* cost_function;
-        ceres::LossFunction* loss_function;
-        std::vector<double*> parameter_blocks;
-        std::vector<int> parameter_block_sizes;
-        int num_residuals;
-        std::vector<int> drop_set;
-        
-        std::vector<double*> parameter_blocks_data;
-        double** raw_jacobians;
-        std::vector<Eigen::MatrixXd> jacobians;
-        Eigen::VectorXd residuals;
-    };
     
     MarginalizationInfo() {
         keep_block_size = 0;
@@ -1014,6 +1015,10 @@ public:
     const Eigen::VectorXd& getLinearizedResiduals() const {
         return linearized_residuals_;
     }
+
+    const std::vector<double*>& getKeepBlockData() const {
+        return keep_block_data;
+    }
     
 private:
     // Residual blocks to be marginalized
@@ -1063,7 +1068,7 @@ public:
                          double** jacobians) const {
         
         const Eigen::VectorXd& linearized_residuals = marginalization_info->getLinearizedResiduals();
-        
+        const Eigen::MatrixXd& linearized_jacobians = marginalization_info->getLinearizedJacobians();
         // Fill residuals
         for (int i = 0; i < num_residuals() && i < linearized_residuals.size(); i++) {
             residuals[i] = linearized_residuals(i);
@@ -3588,7 +3593,7 @@ private:
                             std::vector<double*> parameter_blocks = {pose_param1};
                             std::vector<int> drop_set = {0}; // Drop the pose parameter
                             
-                            auto* residual_info = new MarginalizationInfo::ResidualBlockInfo(
+                            auto* residual_info = new ResidualBlockInfo(
                                 gps_factor, nullptr, parameter_blocks, drop_set);
                             marginalization_info->addResidualBlockInfo(residual_info);
                             
@@ -3600,7 +3605,7 @@ private:
                                 std::vector<double*> vel_parameter_blocks = {vel_param1};
                                 std::vector<int> vel_drop_set = {0}; // Drop the velocity parameter
                                 
-                                auto* vel_residual_info = new MarginalizationInfo::ResidualBlockInfo(
+                                auto* vel_residual_info = new ResidualBlockInfo(
                                     gps_vel_factor, nullptr, vel_parameter_blocks, vel_drop_set);
                                 marginalization_info->addResidualBlockInfo(vel_residual_info);
                             }
@@ -3613,7 +3618,7 @@ private:
                                 std::vector<double*> ori_parameter_blocks = {pose_param1};
                                 std::vector<int> ori_drop_set = {0}; // Drop the pose parameter
                                 
-                                auto* ori_residual_info = new MarginalizationInfo::ResidualBlockInfo(
+                                auto* ori_residual_info = new ResidualBlockInfo(
                                     orientation_factor, nullptr, ori_parameter_blocks, ori_drop_set);
                                 marginalization_info->addResidualBlockInfo(ori_residual_info);
                             }
@@ -3632,7 +3637,7 @@ private:
                             std::vector<double*> parameter_blocks = {pose_param1};
                             std::vector<int> drop_set = {0}; // Drop the pose parameter
                             
-                            auto* residual_info = new MarginalizationInfo::ResidualBlockInfo(
+                            auto* residual_info = new ResidualBlockInfo(
                                 uwb_factor, nullptr, parameter_blocks, drop_set);
                             marginalization_info->addResidualBlockInfo(residual_info);
                             break;
@@ -3669,7 +3674,7 @@ private:
                     // Drop only parameters from oldest state
                     std::vector<int> drop_set = {0, 1, 2}; // Pose, velocity, bias of oldest state
                     
-                    auto* residual_info = new MarginalizationInfo::ResidualBlockInfo(
+                    auto* residual_info = new ResidualBlockInfo(
                         imu_factor_, nullptr, parameter_blocks, drop_set);
                     marginalization_info->addResidualBlockInfo(residual_info);
                     
@@ -3681,7 +3686,7 @@ private:
                         std::vector<double*> orientation_params = {pose_param1, pose_param2};
                         std::vector<int> orientation_drop_set = {0}; // Drop only the oldest pose
                         
-                        auto* orientation_residual = new MarginalizationInfo::ResidualBlockInfo(
+                        auto* orientation_residual = new ResidualBlockInfo(
                             orientation_factor, nullptr, orientation_params, orientation_drop_set);
                         marginalization_info->addResidualBlockInfo(orientation_residual);
                     }
@@ -3693,7 +3698,7 @@ private:
                     std::vector<double*> parameter_blocks = {pose_param1};
                     std::vector<int> drop_set = {0}; // Drop the pose parameter
                     
-                    auto* residual_info = new MarginalizationInfo::ResidualBlockInfo(
+                    auto* residual_info = new ResidualBlockInfo(
                         roll_pitch_factor, nullptr, parameter_blocks, drop_set);
                     marginalization_info->addResidualBlockInfo(residual_info);
                 }
@@ -3715,7 +3720,7 @@ private:
                     std::vector<double*> yaw_params = {pose_param1};
                     std::vector<int> yaw_drop_set = {0}; // Drop the pose parameter
                     
-                    auto* yaw_residual = new MarginalizationInfo::ResidualBlockInfo(
+                    auto* yaw_residual = new ResidualBlockInfo(
                         yaw_factor, nullptr, yaw_params, yaw_drop_set);
                     marginalization_info->addResidualBlockInfo(yaw_residual);
                 }
@@ -3733,7 +3738,7 @@ private:
                     std::vector<double*> parameter_blocks = {vel_param1};
                     std::vector<int> drop_set = {0}; // Drop the velocity parameter
                     
-                    auto* residual_info = new MarginalizationInfo::ResidualBlockInfo(
+                    auto* residual_info = new ResidualBlockInfo(
                         vel_constraint, nullptr, parameter_blocks, drop_set);
                     marginalization_info->addResidualBlockInfo(residual_info);
                 }
@@ -3745,7 +3750,7 @@ private:
                     std::vector<double*> parameter_blocks = {vel_param1, pose_param1};
                     std::vector<int> drop_set = {0, 1}; // Drop both parameters
                     
-                    auto* residual_info = new MarginalizationInfo::ResidualBlockInfo(
+                    auto* residual_info = new ResidualBlockInfo(
                         h_vel_incentive, nullptr, parameter_blocks, drop_set);
                     marginalization_info->addResidualBlockInfo(residual_info);
                 }
