@@ -91,6 +91,25 @@ Eigen::Vector3d convertRfuToEnu(const Eigen::Vector3d& v_rfu_eigen,
     return v_enu;
 }
 
+// 函数：将 Eigen 矩阵保存为 CSV 文件
+void saveEigenMatrixToCSV(const Eigen::MatrixXd& matrix, const std::string& filename) {
+    std::ofstream file(filename);
+    if (file.is_open()) {
+        // Eigen 提供了方便的格式化输出
+        // Eigen::IOFormat(precision, flags, col_sep, row_sep, row_prefix, row_suffix, mat_prefix, mat_suffix)
+        // precision: 浮点数精度
+        // flags: 0 (默认) 或 Eigen::DontAlignCols (不按列对齐，CSV通常不需要)
+        // col_sep: 列分隔符
+        // row_sep: 行分隔符
+        Eigen::IOFormat csv_format(Eigen::StreamPrecision, Eigen::DontAlignCols, ",", "\n");
+        file << matrix.format(csv_format);
+        file.close();
+        ROS_INFO("Matrix successfully saved to %s", filename.c_str());
+    } else {
+        ROS_ERROR("Unable to open file %s for writing.", filename.c_str());
+    }
+}
+
 // Custom parameterization for pose (position + quaternion)
 class PoseParameterization : public ceres::LocalParameterization {
 public:
@@ -682,6 +701,11 @@ struct ResidualBlockInfo {
         delete[] parameters;
         delete[] raw_residuals;
     }
+
+    int localSize(int size)
+    {
+        return size == 7 ? 6 : size;
+    }
     
     ceres::CostFunction* cost_function;
     ceres::LossFunction* loss_function;
@@ -793,6 +817,7 @@ public:
         int total_block_size = 0;
         for (const auto& it : parameter_block_size) {
             total_block_size += it.second;
+            // if (it.second == 7) {total_block_size -=1;}
         }
         
         // Map parameters to indices
@@ -842,7 +867,6 @@ public:
                 }
             }
         }
-        
         if (keep_block_size == 0) {
             ROS_WARN("No parameters to keep after marginalization");
             return;
@@ -894,6 +918,7 @@ public:
                 
                 int idx = parameter_block_idx[addr];
                 int size = parameter_block_size[addr];
+                // if (size == 7) {size = 6;}
                 
                 // Safety check for bounds
                 if (residual_idx + rbi->num_residuals > linearized_jacobians.rows() ||
@@ -909,57 +934,147 @@ public:
             
             residual_idx += rbi->num_residuals;
         }
+        // print out the linearized jacobians for dubugging
+        // ROS_INFO_STREAM("Linearized Jacobians:\n" << linearized_jacobians);
         
-        // Reorder the Jacobian to have [kept_params | marg_params]
+        // // Reorder the Jacobian to have [kept_params | marg_params]
+        // Eigen::MatrixXd reordered_jacobians = Eigen::MatrixXd::Zero(total_residual_size, total_block_size);
+        
+        // // First, copy kept parameters
+        // int col_idx = 0;
+        // for (int i = 0; i < static_cast<int>(keep_block_addr.size()); i++) {
+        //     double* addr = keep_block_addr[i];
+        //     if (!addr) continue;
+            
+        //     int idx = keep_block_idx[i];
+        //     int size = parameter_block_size[addr];
+        //     // if (size == 7) {size = 6;} // Adjust size for quaternion
+            
+        //     // Safety check for bounds
+        //     if (idx + size > linearized_jacobians.cols() || 
+        //         col_idx + size > reordered_jacobians.cols()) {
+        //         ROS_ERROR("Reordering jacobian index out of bounds");
+        //         continue;
+        //     }
+            
+        //     reordered_jacobians.block(0, col_idx, total_residual_size, size) = 
+        //         linearized_jacobians.block(0, idx, total_residual_size, size);
+            
+        //     col_idx += size;
+        // }
+        
+        // // Then, copy marginalized parameters
+        // for (const auto& it : parameter_block_idx) {
+        //     double* addr = it.first;
+        //     if (!addr) continue;
+            
+        //     // Skip if this parameter is kept
+        //     if (std::find(keep_block_addr.begin(), keep_block_addr.end(), addr) != keep_block_addr.end()) {
+        //         continue;
+        //     }
+            
+        //     int idx = it.second;
+        //     int size = parameter_block_size[addr];
+        //     // if (size == 7) {size = 6;} // Adjust size for quaternion
+            
+        //     // Safety check for bounds
+        //     if (idx + size > linearized_jacobians.cols() || 
+        //         col_idx + size > reordered_jacobians.cols()) {
+        //         ROS_ERROR("Reordering marg jacobian index out of bounds");
+        //         continue;
+        //     }
+            
+        //     reordered_jacobians.block(0, col_idx, total_residual_size, size) = 
+        //         linearized_jacobians.block(0, idx, total_residual_size, size);
+            
+        //     col_idx += size;
+        // }
+
+        // Reorder the Jacobian to have [kept_params | marg_params] in pose7-vel3-bias6 order
         Eigen::MatrixXd reordered_jacobians = Eigen::MatrixXd::Zero(total_residual_size, total_block_size);
         
-        // First, copy kept parameters
+        // 定义参数块顺序：pose(7) -> vel(3) -> bias(6)
+        std::vector<int> param_order = {7, 3, 6}; // pose, vel, bias
+        
+        // 按照固定顺序重新排列kept参数
         int col_idx = 0;
-        for (int i = 0; i < static_cast<int>(keep_block_addr.size()); i++) {
-            double* addr = keep_block_addr[i];
-            if (!addr) continue;
-            
-            int idx = keep_block_idx[i];
-            int size = parameter_block_size[addr];
-            
-            // Safety check for bounds
-            if (idx + size > linearized_jacobians.cols() || 
-                col_idx + size > reordered_jacobians.cols()) {
-                ROS_ERROR("Reordering jacobian index out of bounds");
-                continue;
+        std::vector<double*> reordered_keep_addr;
+        std::vector<double*> reordered_keep_data;
+        std::vector<int> reordered_keep_idx;
+        
+        // 先按照参数类型顺序排列kept参数
+        for (int param_size : param_order) {
+            for (int i = 0; i < static_cast<int>(keep_block_addr.size()); i++) {
+                double* addr = keep_block_addr[i];
+                if (!addr) continue;
+                
+                int size = parameter_block_size[addr];
+                if (size != param_size) continue; // 只处理当前大小的参数
+                
+                int idx = keep_block_idx[i];
+                
+                // Safety check for bounds
+                if (idx + size > linearized_jacobians.cols() || 
+                    col_idx + size > reordered_jacobians.cols()) {
+                    ROS_ERROR("Reordering jacobian index out of bounds");
+                    continue;
+                }
+                
+                reordered_jacobians.block(0, col_idx, total_residual_size, size) = 
+                    linearized_jacobians.block(0, idx, total_residual_size, size);
+                
+                // 保存重新排序后的keep参数信息
+                reordered_keep_addr.push_back(addr);
+                reordered_keep_data.push_back(keep_block_data[i]);
+                reordered_keep_idx.push_back(col_idx); // 新的索引位置
+                
+                col_idx += size;
             }
-            
-            reordered_jacobians.block(0, col_idx, total_residual_size, size) = 
-                linearized_jacobians.block(0, idx, total_residual_size, size);
-            
-            col_idx += size;
         }
         
-        // Then, copy marginalized parameters
-        for (const auto& it : parameter_block_idx) {
-            double* addr = it.first;
-            if (!addr) continue;
-            
-            // Skip if this parameter is kept
-            if (std::find(keep_block_addr.begin(), keep_block_addr.end(), addr) != keep_block_addr.end()) {
-                continue;
+        // 按照固定顺序排列marginalized参数
+        for (int param_size : param_order) {
+            for (const auto& it : parameter_block_idx) {
+                double* addr = it.first;
+                if (!addr) continue;
+                
+                int size = parameter_block_size[addr];
+                if (size != param_size) continue; // 只处理当前大小的参数
+                
+                // Skip if this parameter is kept
+                if (std::find(keep_block_addr.begin(), keep_block_addr.end(), addr) != keep_block_addr.end()) {
+                    continue;
+                }
+                
+                int idx = it.second;
+                
+                // Safety check for bounds
+                if (idx + size > linearized_jacobians.cols() || 
+                    col_idx + size > reordered_jacobians.cols()) {
+                    ROS_ERROR("Reordering marg jacobian index out of bounds");
+                    continue;
+                }
+                
+                reordered_jacobians.block(0, col_idx, total_residual_size, size) = 
+                    linearized_jacobians.block(0, idx, total_residual_size, size);
+                
+                col_idx += size;
             }
-            
-            int idx = it.second;
-            int size = parameter_block_size[addr];
-            
-            // Safety check for bounds
-            if (idx + size > linearized_jacobians.cols() || 
-                col_idx + size > reordered_jacobians.cols()) {
-                ROS_ERROR("Reordering marg jacobian index out of bounds");
-                continue;
-            }
-            
-            reordered_jacobians.block(0, col_idx, total_residual_size, size) = 
-                linearized_jacobians.block(0, idx, total_residual_size, size);
-            
-            col_idx += size;
         }
+        
+        // 更新keep参数的信息为重新排序后的
+        keep_block_addr = reordered_keep_addr;
+        keep_block_data = reordered_keep_data;
+        keep_block_idx = reordered_keep_idx;
+
+        // // save the jacobians, residuals for debugging
+        // std::string linearized_jacobians_file = "/home/xiangru/code/toyslam_ws/src/data/linearized_jacobians.txt";
+        // std::string linearized_residuals_file = "/home/xiangru/code/toyslam_ws/src/data/linearized_residuals.txt";
+        // std::string reordered_jacobians_file = "/home/xiangru/code/toyslam_ws/src/data/reordered_jacobians.txt";
+        // saveEigenMatrixToCSV(linearized_jacobians, linearized_jacobians_file);
+        // // saveEigenMatrixToFile(linearized_residuals_file, linearized_residuals);
+        // saveEigenMatrixToCSV(reordered_jacobians, reordered_jacobians_file);
+        // // ROS_INFO_STREAM("Linearized Residuals:\n" << linearized_residuals);
         
         // Split into kept and marginalized parts
         Eigen::MatrixXd jacobian_keep = reordered_jacobians.leftCols(keep_block_size);
@@ -1058,9 +1173,9 @@ public:
         mutable_parameter_block_sizes()->push_back(7); // pose1 (position + quaternion)
         mutable_parameter_block_sizes()->push_back(3); // velocity1
         mutable_parameter_block_sizes()->push_back(6); // bias1 (acc + gyro)
-        mutable_parameter_block_sizes()->push_back(7); // pose2
-        mutable_parameter_block_sizes()->push_back(3); // velocity2
-        mutable_parameter_block_sizes()->push_back(6); // bias2
+        // mutable_parameter_block_sizes()->push_back(7); // pose2
+        // mutable_parameter_block_sizes()->push_back(3); // velocity2
+        // mutable_parameter_block_sizes()->push_back(6); // bias2
     }
     
     virtual bool Evaluate(double const* const* parameters, 
@@ -1069,28 +1184,87 @@ public:
         
         const Eigen::VectorXd& linearized_residuals = marginalization_info->getLinearizedResiduals();
         const Eigen::MatrixXd& linearized_jacobians = marginalization_info->getLinearizedJacobians();
+
+        Eigen::MatrixXd H_ = linearized_jacobians;
+        double lambda = 1e-8;
+        for (int i = 0; i < H_.rows(); i++) {
+            H_(i, i) += lambda;
+        }
+
+        // Firstly, decompose the hessian first
+        Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> saes(H_);
+        // check if the decomposation is successfull or not
+        if(saes.info()!=Eigen::Success){
+            ROS_ERROR("Eigen Solver Fail!!!");
+            return false;
+        }
+
+        // compute sqrt_D
+        Eigen::MatrixXd P = saes.eigenvectors();
+        Eigen::VectorXd evs = saes.eigenvalues();
+        Eigen::DiagonalMatrix<double, Eigen::Dynamic> sqrt_D(evs.size());
+        Eigen::VectorXd sqrt_evs = evs.array().sqrt().matrix();
+        sqrt_D.diagonal() = sqrt_evs;
+
+        // print out the size of the P, D, and b_
+        // ROS_INFO("P size: %d, D size: %d, b_ size: %d", P.rows(), sqrt_D.diagonal().size(), linearized_residuals.size());
+
+        // compute the whole jocobian, and residual
+        Eigen::MatrixXd whole_Jacobian = sqrt_D * P.transpose();
+        Eigen::VectorXd whole_residuals = - (sqrt_D.inverse() * P.transpose() * linearized_residuals);
+
+
         // Fill residuals
-        for (int i = 0; i < num_residuals() && i < linearized_residuals.size(); i++) {
-            residuals[i] = linearized_residuals(i);
+        // for (int i = 0; i < num_residuals() && i < linearized_residuals.size(); i++) {
+        //     residuals[i] = linearized_residuals(i);
+        // }
+        for (int i = 0; i < num_residuals() && i < whole_residuals.size(); i++) {
+            residuals[i] = whole_residuals(i);
+        }
+        // Check if jacobians are requested
+        if (!jacobians) {
+            return true; // No jacobians requested, just return
         }
         
-        // Fill Jacobians if requested
-        if (jacobians) {
-            int param_sizes[6] = {7, 3, 6, 7, 3, 6}; // Fixed sizes for our parameter blocks
-            
-            for (int p = 0; p < 6; p++) {
-                if (jacobians[p]) {
-                    // Initialize jacobian for this parameter block to zero
-                    memset(jacobians[p], 0, sizeof(double) * num_residuals() * param_sizes[p]);
-                    
-                    // Simple diagonal approximation of Jacobian for stability
-                    double weight = (p < 3) ? 1.0 : 0.1; // Stronger weight for first state
-                    for (int r = 0; r < std::min(num_residuals(), param_sizes[p]); r++) {
-                        jacobians[p][r * param_sizes[p] + r] = weight;
-                    }
+        // give the values to jacobians
+        int param_sizes[3] = {7, 3, 6}; // Fixed sizes for our parameter blocks
+        int col_offset = 0;
+        for (int p = 0; p < 3; p++){
+            if(!jacobians[p]) {continue;}
+            memset(jacobians[p], 0, sizeof(double) * num_residuals() * param_sizes[p]);
+            // Get the sub-block of the whole Jacobian matrix corresponding to this parameter block
+            Eigen::MatrixXd J_block = whole_Jacobian.block(0, col_offset, num_residuals(), param_sizes[p]);
+
+            // Copy the values from the Eigen matrix to the Ceres jacobian array
+            for (int i = 0; i < num_residuals(); i++) {
+                for (int j = 0; j < param_sizes[p]; j++) {
+                    jacobians[p][i * param_sizes[p] + j] = J_block(i, j);
                 }
             }
+            col_offset += param_sizes[p];
+
         }
+        
+        // // Fill Jacobians if requested
+        // if (jacobians) {
+        //     int param_sizes[6] = {7, 3, 6, 7, 3, 6}; // Fixed sizes for our parameter blocks
+            
+        //     for (int p = 0; p < 6; p++) {
+        //         if (jacobians[p]) {
+        //             // Initialize jacobian for this parameter block to zero
+        //             memset(jacobians[p], 0, sizeof(double) * num_residuals() * param_sizes[p]);
+                    
+        //             // Simple diagonal approximation of Jacobian for stability
+        //             double weight = (p < 3) ? 1.0 : 0.1; // Stronger weight for first state
+        //             for (int r = 0; r < std::min(num_residuals(), param_sizes[p]); r++) {
+        //                 jacobians[p][r * param_sizes[p] + r] = weight;
+        //             }
+                    
+        //             //fill the jacobian with real value 
+
+        //         }
+        //     }
+        // }
         
         return true;
     }
@@ -2425,7 +2599,7 @@ private:
             Eigen::Vector3d enu_position = convertGpsToEnu(msg->latitude, msg->longitude, msg->altitude);
 
             // TESTING: Add artificial noise to GPS position if in test mode
-            if (true) {
+            if (false) {
                 double gps_noise_magnitude_ = 2.0;
                 // Only add noise to every nth message to create visible outliers
                 static int msg_counter = 0;
@@ -3766,6 +3940,19 @@ private:
                 //         bias_constraint, nullptr, parameter_blocks, drop_set);
                 //     marginalization_info->addResidualBlockInfo(residual_info);
                 // }
+
+                // add last marginalization factor 
+                if(last_marginalization_info_) {
+                    // Add last marginalization info to the new marginalization info
+                    MarginalizationFactor* last_margin_factor = new MarginalizationFactor(last_marginalization_info_);
+                    std::vector<double*> last_margin_params = {pose_param1, vel_param1, bias_param1};
+                    std::vector<int> last_margin_drop_set = {0, 1, 2}; // Drop pose, velocity, bias of oldest state
+
+                    auto* last_margin_residual = new ResidualBlockInfo(
+                        last_margin_factor, nullptr, last_margin_params, last_margin_drop_set);
+                    marginalization_info->addResidualBlockInfo(last_margin_residual);
+                        
+                }
                 
                 // Perform pre-marginalization
                 marginalization_info->preMarginalize();
@@ -4511,9 +4698,11 @@ private:
                     // problem.AddResidualBlock(factor, nullptr,
                     //                        variables[1].pose, variables[1].velocity, variables[1].bias,
                     //                        variables[0].pose, variables[0].velocity, variables[0].bias);
+                    // problem.AddResidualBlock(factor, nullptr,
+                    //                        variables[0].pose, variables[0].velocity, variables[0].bias,
+                    //                        variables[1].pose, variables[1].velocity, variables[1].bias);
                     problem.AddResidualBlock(factor, nullptr,
-                                           variables[0].pose, variables[0].velocity, variables[0].bias,
-                                           variables[1].pose, variables[1].velocity, variables[1].bias);
+                        variables[0].pose, variables[0].velocity, variables[0].bias);
                 }
             }
             
