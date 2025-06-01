@@ -732,6 +732,14 @@ public:
         keep_block_data.clear();
         keep_block_addr.clear();
     }
+
+    int localSize(int size) {
+        return size == 7 ? 6 : size;
+    }
+
+    int globalSize(int size) {
+        return size == 6 ? 7 : size;
+    }
     
     ~MarginalizationInfo() {
         // Clean up parameter block data - this needs to be done before residual_block_infos
@@ -815,8 +823,10 @@ public:
     void marginalize() {
         // Count total parameters size and index them
         int total_block_size = 0;
+        int total_block_size_local = 0;
         for (const auto& it : parameter_block_size) {
             total_block_size += it.second;
+            total_block_size_local += localSize(it.second);
             // if (it.second == 7) {total_block_size -=1;}
         }
         
@@ -829,6 +839,7 @@ public:
         
         // Get parameters to keep (not in any drop set)
         keep_block_size = 0;
+        keep_block_sizes.clear();
         keep_block_idx.clear();
         keep_block_data.clear();
         keep_block_addr.clear();
@@ -859,6 +870,7 @@ public:
             if (!is_dropped) {
                 // This parameter is kept
                 keep_block_size += size;
+                keep_block_sizes.push_back(size);
                 
                 if (parameter_block_data.find(addr) != parameter_block_data.end()) {
                     keep_block_data.push_back(parameter_block_data[addr]);
@@ -872,12 +884,6 @@ public:
             return;
         }
         
-        // Calculate marginalized block size
-        int marg_block_size = total_block_size - keep_block_size;
-        if (marg_block_size <= 0) {
-            ROS_WARN("No parameters to marginalize");
-            return;
-        }
         
         // Calculate total residual size
         int total_residual_size = 0;
@@ -930,6 +936,9 @@ public:
                 
                 // Copy jacobian block
                 linearized_jacobians.block(residual_idx, idx, rbi->num_residuals, size) = rbi->jacobians[i];
+                // ROS_INFO_STREAM("Linearized Jacobian for block " << i << " at index " << idx 
+                //     << " with size " << size << " and residuals size " << rbi->num_residuals);
+                // ROS_INFO_STREAM("Jacobian block:\n" << rbi->jacobians[i]);
             }
             
             residual_idx += rbi->num_residuals;
@@ -991,13 +1000,15 @@ public:
         // }
 
         // Reorder the Jacobian to have [kept_params | marg_params] in pose7-vel3-bias6 order
-        Eigen::MatrixXd reordered_jacobians = Eigen::MatrixXd::Zero(total_residual_size, total_block_size);
+        Eigen::MatrixXd reordered_jacobians = Eigen::MatrixXd::Zero(total_residual_size, total_block_size_local);
         
         // 定义参数块顺序：pose(7) -> vel(3) -> bias(6)
         std::vector<int> param_order = {7, 3, 6}; // pose, vel, bias
         
         // 按照固定顺序重新排列kept参数
         int col_idx = 0;
+        int reorderd_block_size = 0;
+        std::vector<int> reordered_block_sizes;
         std::vector<double*> reordered_keep_addr;
         std::vector<double*> reordered_keep_data;
         std::vector<int> reordered_keep_idx;
@@ -1010,6 +1021,9 @@ public:
                 
                 int size = parameter_block_size[addr];
                 if (size != param_size) continue; // 只处理当前大小的参数
+                reordered_block_sizes.push_back(size);
+                size = localSize(size); // 调整大小
+                reorderd_block_size += size;
                 
                 int idx = keep_block_idx[i];
                 
@@ -1040,6 +1054,8 @@ public:
                 
                 int size = parameter_block_size[addr];
                 if (size != param_size) continue; // 只处理当前大小的参数
+
+                size = localSize(size); // 调整大小
                 
                 // Skip if this parameter is kept
                 if (std::find(keep_block_addr.begin(), keep_block_addr.end(), addr) != keep_block_addr.end()) {
@@ -1063,22 +1079,28 @@ public:
         }
         
         // 更新keep参数的信息为重新排序后的
+        keep_block_sizes = reordered_block_sizes;
+        keep_block_size = reorderd_block_size;
         keep_block_addr = reordered_keep_addr;
         keep_block_data = reordered_keep_data;
         keep_block_idx = reordered_keep_idx;
 
-        // // save the jacobians, residuals for debugging
-        // std::string linearized_jacobians_file = "/home/xiangru/code/toyslam_ws/src/data/linearized_jacobians.txt";
-        // std::string linearized_residuals_file = "/home/xiangru/code/toyslam_ws/src/data/linearized_residuals.txt";
-        // std::string reordered_jacobians_file = "/home/xiangru/code/toyslam_ws/src/data/reordered_jacobians.txt";
-        // saveEigenMatrixToCSV(linearized_jacobians, linearized_jacobians_file);
-        // // saveEigenMatrixToFile(linearized_residuals_file, linearized_residuals);
-        // saveEigenMatrixToCSV(reordered_jacobians, reordered_jacobians_file);
-        // // ROS_INFO_STREAM("Linearized Residuals:\n" << linearized_residuals);
+        // Calculate marginalized block size
+        int marg_block_size = total_block_size_local - keep_block_size;
+        if (marg_block_size <= 0) {
+            ROS_WARN("No parameters to marginalize");
+            return;
+        }
         
         // Split into kept and marginalized parts
         Eigen::MatrixXd jacobian_keep = reordered_jacobians.leftCols(keep_block_size);
         Eigen::MatrixXd jacobian_marg = reordered_jacobians.rightCols(marg_block_size);
+
+        // std::string jacobian_keep_file = "/home/xiangru/code/toyslam_ws/src/data/jacobian_keep.txt";
+        // std::string jacobian_marg_file = "/home/xiangru/code/toyslam_ws/src/data/jacobian_marg.txt";
+        // saveEigenMatrixToCSV(jacobian_keep, jacobian_keep_file);
+        // // saveEigenMatrixToFile(linearized_residuals_file, linearized_residuals);
+        // saveEigenMatrixToCSV(jacobian_marg, jacobian_marg_file);
         
         // Form the normal equations: J^T * J * delta_x = -J^T * r
         Eigen::MatrixXd H_marg = jacobian_marg.transpose() * jacobian_marg;
@@ -1102,7 +1124,7 @@ public:
         
         // Apply regularization to eigenvalues
         Eigen::VectorXd S_inv = Eigen::VectorXd::Zero(S.size());
-        double lambda_threshold = 1e-5;
+        double lambda_threshold = 1e-8;
         for (int i = 0; i < S.size(); i++) {
             if (S(i) > lambda_threshold) {
                 S_inv(i) = 1.0 / S(i);
@@ -1110,6 +1132,7 @@ public:
                 S_inv(i) = 0.0;
             }
         }
+        // Eigen::MatrixXd S_inv = S.inverse();
         
         // Compute inverse of H_marg using eigendecomposition
         Eigen::MatrixXd H_marg_inv = V * S_inv.asDiagonal() * V.transpose();
@@ -1120,6 +1143,29 @@ public:
         // Final linearized system for prior
         linearized_jacobians_ = jacobian_keep.transpose() * jacobian_keep - schur_complement;
         linearized_residuals_ = b_keep - H_keep_marg * H_marg_inv * b_marg;
+
+        Eigen::MatrixXd H_ = linearized_jacobians_;
+
+        // Firstly, decompose the hessian first
+        Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> saes2(H_);
+        // check if the decomposation is successfull or not
+        if(saes2.info()!=Eigen::Success){
+            ROS_ERROR("Eigen Solver Fail!!!");
+        }
+
+        // compute sqrt_D
+        Eigen::MatrixXd P = saes2.eigenvectors();
+        Eigen::VectorXd evs = saes2.eigenvalues();
+        Eigen::DiagonalMatrix<double, Eigen::Dynamic> sqrt_D(evs.size());
+        Eigen::VectorXd sqrt_evs = evs.array().sqrt().matrix();
+        sqrt_D.diagonal() = sqrt_evs;
+
+        // print out the size of the P, D, and b_
+        // ROS_INFO("P size: %d, D size: %d, b_ size: %d", P.rows(), sqrt_D.diagonal().size(), linearized_residuals.size());
+
+        // compute the whole jocobian, and residual
+        linearized_jacobians_ = sqrt_D * P.transpose();
+        linearized_residuals_ = - (sqrt_D.inverse() * P.transpose() * linearized_residuals_);
     }
     
     // Interface for getting data needed by MarginalizationFactor
@@ -1134,6 +1180,18 @@ public:
     const std::vector<double*>& getKeepBlockData() const {
         return keep_block_data;
     }
+
+    const std::vector<int>& getKeepBlockSizes() const {
+        return keep_block_sizes;
+    }
+
+    const int getKeepBlockSize() const {
+        return keep_block_size;
+    }
+
+    const std::vector<int>& getKeepBlockIdx() const {
+        return keep_block_idx;
+    }
     
 private:
     // Residual blocks to be marginalized
@@ -1146,9 +1204,10 @@ private:
     
     // Kept parameter block information
     int keep_block_size;
+    std::vector<int> keep_block_sizes;
     std::vector<double*> keep_block_data;
     std::vector<double*> keep_block_addr;
-    std::vector<int> keep_block_idx;
+    std::vector<int> keep_block_idx; 
     
     // Linearized system after marginalization
     Eigen::MatrixXd linearized_jacobians_;
@@ -1185,85 +1244,72 @@ public:
         const Eigen::VectorXd& linearized_residuals = marginalization_info->getLinearizedResiduals();
         const Eigen::MatrixXd& linearized_jacobians = marginalization_info->getLinearizedJacobians();
 
-        Eigen::MatrixXd H_ = linearized_jacobians;
-        double lambda = 1e-8;
-        for (int i = 0; i < H_.rows(); i++) {
-            H_(i, i) += lambda;
+        int n = marginalization_info->getKeepBlockSize();
+        Eigen::VectorXd dx(n);
+
+        for(int i = 0; i<static_cast<int>(marginalization_info->getKeepBlockSizes().size()); i++){
+            int size = marginalization_info->getKeepBlockSizes()[i];
+            int idx = marginalization_info->getKeepBlockIdx()[i];
+
+            Eigen::VectorXd x = Eigen::Map<const Eigen::VectorXd>(parameters[i], size);
+            Eigen::VectorXd x0 = Eigen::Map<const Eigen::VectorXd>(marginalization_info->getKeepBlockData()[i], size);
+            // ROS_INFO_STREAM("MarginalizationFactor: size: " << size << ", idx: " << idx << ", x: " << x.transpose() << ", x0: " << x0.transpose());
+            if (size != 7) 
+                dx.segment(idx, size) = x - x0;
+            else {
+                dx.segment<3>(idx) = x.head<3>() - x0.head<3>(); // position
+                dx.segment<3>(idx + 3) = 2.0 * Utility::positify(Eigen::Quaterniond(x0(6), x0(3), x0(4), x0(5)).inverse() * Eigen::Quaterniond(x(6), x(3), x(4), x(5))).vec();
+                if (!((Eigen::Quaterniond(x0(6), x0(3), x0(4), x0(5)).inverse() * Eigen::Quaterniond(x(6), x(3), x(4), x(5))).w() >= 0))
+                {
+                    dx.segment<3>(idx + 3) = 2.0 * -Utility::positify(Eigen::Quaterniond(x0(6), x0(3), x0(4), x0(5)).inverse() * Eigen::Quaterniond(x(6), x(3), x(4), x(5))).vec();
+                }
+            }
         }
-
-        // Firstly, decompose the hessian first
-        Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> saes(H_);
-        // check if the decomposation is successfull or not
-        if(saes.info()!=Eigen::Success){
-            ROS_ERROR("Eigen Solver Fail!!!");
-            return false;
-        }
-
-        // compute sqrt_D
-        Eigen::MatrixXd P = saes.eigenvectors();
-        Eigen::VectorXd evs = saes.eigenvalues();
-        Eigen::DiagonalMatrix<double, Eigen::Dynamic> sqrt_D(evs.size());
-        Eigen::VectorXd sqrt_evs = evs.array().sqrt().matrix();
-        sqrt_D.diagonal() = sqrt_evs;
-
-        // print out the size of the P, D, and b_
-        // ROS_INFO("P size: %d, D size: %d, b_ size: %d", P.rows(), sqrt_D.diagonal().size(), linearized_residuals.size());
-
-        // compute the whole jocobian, and residual
-        Eigen::MatrixXd whole_Jacobian = sqrt_D * P.transpose();
-        Eigen::VectorXd whole_residuals = - (sqrt_D.inverse() * P.transpose() * linearized_residuals);
+        Eigen::Map<Eigen::VectorXd>(residuals, n) = marginalization_info->getLinearizedResiduals() + marginalization_info->getLinearizedJacobians() * dx;
+        // ROS_INFO_STREAM("Residualas: "<<marginalization_info->getLinearizedResiduals() + marginalization_info->getLinearizedJacobians() * dx);
 
 
         // Fill residuals
         // for (int i = 0; i < num_residuals() && i < linearized_residuals.size(); i++) {
         //     residuals[i] = linearized_residuals(i);
         // }
-        for (int i = 0; i < num_residuals() && i < whole_residuals.size(); i++) {
-            residuals[i] = whole_residuals(i);
-        }
+
         // Check if jacobians are requested
         if (!jacobians) {
             return true; // No jacobians requested, just return
         }
-        
-        // give the values to jacobians
-        int param_sizes[3] = {7, 3, 6}; // Fixed sizes for our parameter blocks
-        int col_offset = 0;
-        for (int p = 0; p < 3; p++){
-            if(!jacobians[p]) {continue;}
-            memset(jacobians[p], 0, sizeof(double) * num_residuals() * param_sizes[p]);
-            // Get the sub-block of the whole Jacobian matrix corresponding to this parameter block
-            Eigen::MatrixXd J_block = whole_Jacobian.block(0, col_offset, num_residuals(), param_sizes[p]);
 
-            // Copy the values from the Eigen matrix to the Ceres jacobian array
-            for (int i = 0; i < num_residuals(); i++) {
-                for (int j = 0; j < param_sizes[p]; j++) {
-                    jacobians[p][i * param_sizes[p] + j] = J_block(i, j);
-                }
+        for(int i=0; i<static_cast<int>(marginalization_info->getKeepBlockSizes().size()); i++){
+            // ROS_INFO_STREAM("MarginalizationFactor: Jacobian for block " << i << ", size: " << marginalization_info->getKeepBlockSizes()[i]);
+            if (!jacobians[i]) {
+                continue; // Skip null jacobians
             }
-            col_offset += param_sizes[p];
+            int size = marginalization_info->getKeepBlockSizes()[i], local_size = marginalization_info->localSize(size);
+            int idx = marginalization_info->getKeepBlockIdx()[i];
+            Eigen::Map<Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> jacobian(jacobians[i], n, size);
+            jacobian.setZero();
+            jacobian.leftCols(local_size) = marginalization_info->getLinearizedJacobians().middleCols(idx, local_size);
 
+            // ROS_INFO_STREAM("Jacobian for block " << i << " value:"  << jacobian);
         }
         
-        // // Fill Jacobians if requested
-        // if (jacobians) {
-        //     int param_sizes[6] = {7, 3, 6, 7, 3, 6}; // Fixed sizes for our parameter blocks
-            
-        //     for (int p = 0; p < 6; p++) {
-        //         if (jacobians[p]) {
-        //             // Initialize jacobian for this parameter block to zero
-        //             memset(jacobians[p], 0, sizeof(double) * num_residuals() * param_sizes[p]);
-                    
-        //             // Simple diagonal approximation of Jacobian for stability
-        //             double weight = (p < 3) ? 1.0 : 0.1; // Stronger weight for first state
-        //             for (int r = 0; r < std::min(num_residuals(), param_sizes[p]); r++) {
-        //                 jacobians[p][r * param_sizes[p] + r] = weight;
-        //             }
-                    
-        //             //fill the jacobian with real value 
+        // // give the values to jacobians
+        // int param_sizes[3] = {7, 3, 6}; // Fixed sizes for our parameter blocks
+        // int col_offset = 0;
+        // for (int p = 0; p < 3; p++){
+        //     if(!jacobians[p]) {continue;}
+        //     memset(jacobians[p], 0, sizeof(double) * num_residuals() * param_sizes[p]);
+        //     // Get the sub-block of the whole Jacobian matrix corresponding to this parameter block
+        //     Eigen::MatrixXd J_block = whole_Jacobian.block(0, col_offset, num_residuals(), param_sizes[p]);
 
+        //     // Copy the values from the Eigen matrix to the Ceres jacobian array
+        //     for (int i = 0; i < num_residuals(); i++) {
+        //         for (int j = 0; j < param_sizes[p]; j++) {
+        //             jacobians[p][i * param_sizes[p] + j] = J_block(i, j);
         //         }
         //     }
+        //     col_offset += param_sizes[p];
+
         // }
         
         return true;
@@ -2599,8 +2645,8 @@ private:
             Eigen::Vector3d enu_position = convertGpsToEnu(msg->latitude, msg->longitude, msg->altitude);
 
             // TESTING: Add artificial noise to GPS position if in test mode
-            if (false) {
-                double gps_noise_magnitude_ = 2.0;
+            if (true) {
+                double gps_noise_magnitude_ = 5.0;
                 // Only add noise to every nth message to create visible outliers
                 static int msg_counter = 0;
 
@@ -4844,7 +4890,7 @@ private:
                     double gyro_bias_diff = (new_gyro_bias - state_window_[i].gyro_bias).norm();
 
                     // If the difference is too large, repropagate the preintegration
-                    if (acc_bias_diff > 0.0005 || gyro_bias_diff > 0.00005) {
+                    if (acc_bias_diff > 0.0005 || gyro_bias_diff > 0.0005) {
                         // ROS_WARN("Large bias difference detected: acc [%.3f, %.3f, %.3f], gyro [%.3f, %.3f, %.3f]",
                         //     acc_bias_diff, gyro_bias_diff);
 
