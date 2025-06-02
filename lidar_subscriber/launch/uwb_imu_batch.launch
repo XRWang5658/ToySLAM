@@ -1,12 +1,12 @@
 <launch>
 
-     <arg name="results_log_path" default="$(find toyslam)/../data/results.txt" 
+     <arg name="results_log_path" default="$(find toyslam)/../../../data/results.txt" 
          doc="Path for the optimization results log file (parameters). Empty generates default name." />
-     <arg name="metrics_log_path" default="$(find toyslam)/../data/metrics.txt" 
+     <arg name="metrics_log_path" default="$(find toyslam)/../../../data/metrics.txt" 
          doc="Path for the optimization metrics log file (summary/computation). Empty generates default name." />
-     <arg name="bias_log_path" default="$(find toyslam)/../data/bias.txt" 
+     <arg name="bias_log_path" default="$(find toyslam)/../../../data/bias.txt" 
          doc="Path for the optimization bias log file (summary/computation). Empty generates default name." />
-
+     <!--$(find toyslam)/../../../data/bias.txt Yixin's bias.txt address-->
      <!--Most Critical: Gravity Acc-->
      <arg name="gravity_magnitude" default="9.785" 
          doc="Gravity acceleration in m/s². Default is 9.785 m/s². for Hong Kong, it can vary depends on the latitude" />

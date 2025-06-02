@@ -14,7 +14,7 @@ PYTHON_SCRIPT_FULL_PATH="${SCRIPT_DIR}/${PYTHON_SCRIPT_NAME}"
 # Default path to the bias data file.
 # This path is relative to where you RUN this shell script from (Current Working Directory),
 # OR it should be an absolute path.
-DEFAULT_DATA_FILE_PATH="src/data/bias.txt"
+DEFAULT_DATA_FILE_PATH="data/bias.txt" # src/data/bias.txt
 
 # Column names and plot parameters for IMU biases
 TIMESTAMP_COLUMN="timestamp"
