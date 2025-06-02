@@ -2467,6 +2467,162 @@ private:
         ROS_INFO("=========================");
     }
 
+    // input msg: odometry (pose + velocity) in ECEF frame
+    void gpsCallback_odo(const nav_msgs::Odometry::ConstPtr &msg){
+        try{
+            std::lock_guard<std::mutex> lock(data_mutex_);
+            double unix_timestamp = msg->header.stamp.toSec();
+
+            static bool first_conversion = true;
+            if(first_conversion){
+                ROS_INFO("First ros time conversion: ros=%.3f,  unix=%.3f",
+                    msg->header.stamp, unix_timestamp);
+                first_conversion = false;
+            }
+
+            // get coordinates in ECEF frame
+            Eigen::Vector3d pose_ecef = Eigen::Vector3d(
+                msg->pose.pose.position.x,
+                msg->pose.pose.position.y,
+                msg->pose.pose.position.z);
+
+            // get velocity in ECEF frame
+            Eigen::Vector3d vel_ecef = Eigen::Vector3d(
+                msg->twist.twist.linear.x,
+                msg->twist.twist.linear.y,
+                msg->twist.twist.linear.z);
+
+            // set reference point if not set yet
+            // firstly convert to LLH format to fit the original code
+            Eigen::Vector3d pose_llh = m_GNSS_Tools.ecef2llh(pose_ecef);
+
+            if (!has_gps_reference_) {
+                ref_longitude_ = pose_llh(0);
+                ref_latitude_ = pose_llh(1);
+                ref_altitude_ = pose_llh(2);
+                ENU_ref = pose_llh;
+                has_gps_reference_ = true;
+                ROS_INFO("Set GPS reference: lat=%.7f, lon=%.7f, alt=%.3f", 
+                        ref_latitude_, ref_longitude_, ref_altitude_);
+            }
+
+            // convert to ENU frame pose and velocity
+            Eigen::Vector3d pose_enu = m_GNSS_Tools.ecef2enu(ENU_ref, pose_ecef);
+            Eigen::Vector3d vel_enu = m_GNSS_Tools.ecefVelocity2enu(ENU_ref, vel_ecef);
+
+            // DEBUG pose and velocity conversion
+            ROS_DEBUG("GPS pose converted: ECEF [%.2f, %.2f, %.2f] -> ENU [%.2f, %.2f, %.2f]",
+                    pose_ecef.x(), pose_ecef.y(), pose_ecef.z(),
+                    pose_enu.x(), pose_enu.y(), pose_enu.z());
+            ROS_DEBUG("GPS velocity converted: ECEF [%.2f, %.2f, %.2f] -> ENU [%.2f, %.2f, %.2f], magnitude: %.2f m/s (%.1f km/h)",
+                    vel_ecef.x(), vel_ecef.y(), vel_ecef.z(),
+                    vel_enu.x(), vel_enu.y(), vel_enu.z(),
+                    vel_enu.norm(), vel_enu.norm() * 3.6);
+
+            // add unit quaternion to fit the original code
+            Eigen::Quaterniond orientation = Eigen::Quaterniond::Identity();
+
+            // create GPS measurement with timestamps from the bag
+            GpsMeasurement measurement;
+            measurement.position = pose_enu;
+            measurement.velocity = vel_enu;
+            measurement.orientation = orientation;
+            measurement.timestamp = unix_timestamp;  // use the bag's timestamp
+
+            // add gps path for visualization
+            geometry_msgs::PoseStamped pose_stamped;
+            pose_stamped.header.stamp = ros::Time(unix_timestamp);
+            pose_stamped.header.frame_id = world_frame_id_;
+            pose_stamped.pose.position.x = pose_enu.x();
+            pose_stamped.pose.position.y = pose_enu.y();
+            pose_stamped.pose.position.z = pose_enu.z();
+            pose_stamped.pose.orientation.w = orientation.w();
+            pose_stamped.pose.orientation.x = orientation.x();
+            pose_stamped.pose.orientation.y = orientation.y();
+            pose_stamped.pose.orientation.z = orientation.z();
+
+            gps_path_msg_.header.stamp = ros::Time(unix_timestamp);
+            gps_path_msg_.poses.push_back(pose_stamped);
+
+            // publish gps path
+            gps_path_pub_.publish(gps_path_msg_);
+
+            // add to gps measurements
+            gps_measurements_.push_back(measurement);
+
+            // Initialize if not initialized and using GPS
+            if (!is_initialized_ && use_gps_instead_of_uwb_) {
+                // Wait for some IMU data before initializing
+                if (imu_buffer_.size() >= 5) {
+                    ROS_INFO("Initializing system with GPS measurement at timestamp: %.3f", unix_timestamp);
+                    initializeFromGps(measurement);
+                    is_initialized_ = true;
+                } else {
+                    ROS_INFO_THROTTLE(1.0, "Waiting for IMU data before GPS initialization...");
+                }
+                return;
+            }
+
+            // Create a new keyframe at each GPS measurement
+            if (is_initialized_ && has_imu_data_ && use_gps_instead_of_uwb_) {
+                
+                // check if we have IMU data covering this GPS timestamp
+                bool has_surrounding_imu_data = false;
+                double closest_imu_time = 0;
+                double closest_time_diff = std::numeric_limits<double>::max(); // set as the maximum first
+
+                for (const auto& imu : imu_buffer_) {
+                    double imu_time = imu.header.stamp.toSec();
+                    double time_diff = std::abs(imu_time - unix_timestamp);
+
+                    if (time_diff < closest_time_diff) {
+                        closest_time_diff = time_diff;
+                        closest_imu_time = imu_time;
+                    }
+
+                    // consider IMU data within 50ms of the GPS timestamp
+                    if (time_diff < 0.05) {
+                        has_surrounding_imu_data = true;
+                        break;
+                    }
+                }
+
+                if (!has_surrounding_imu_data) {
+                    if(!imu_buffer_.empty()){
+                        ROS_WARN("GPS-IMU time mismatch: GPS=%.3f, closest IMU=%.3f (diff=%.3f sec), buffer range [%.3f to %.3f]", 
+                            unix_timestamp, closest_imu_time, closest_time_diff,
+                            imu_buffer_.front().header.stamp.toSec(), 
+                            imu_buffer_.back().header.stamp.toSec());
+
+                        // If the time difference is small enough, still create a keyframe
+                        if (closest_time_diff < 0.2) {  // Accept up to 200ms difference
+                            has_surrounding_imu_data = true;
+                            ROS_INFO("Using nearby IMU data (%.3f sec offset) for keyframe", closest_time_diff);
+                            
+                            // Fix: Keep the GPS timestamp but know we have nearby IMU data
+                        }
+                    }
+                }
+
+                if (has_surrounding_imu_data) {
+                    // Create keyframe from GPS
+                    createKeyframeFromGps(measurement);
+                    ROS_INFO("Created GPS keyframe at timestamp %.3f", measurement.timestamp);
+                } else {
+                    ROS_WARN("Skipping GPS keyframe at %.3f - no surrounding IMU data", unix_timestamp);
+                }
+            }
+            
+            // Call this function at the end of gpsCallback after adding a few measurements:
+            if (gps_measurements_.size() == 5) {
+                testGpsVelocityCalculation();
+            }
+
+        }catch (const std::exception& e) {
+            ROS_ERROR("Exception in gpsCallback_odometry: %s", e.what());
+        }
+    }
+
     // original GPS callback function
     void gpsCallback(const novatel_msgs::INSPVAX::ConstPtr& msg) {
         try {
