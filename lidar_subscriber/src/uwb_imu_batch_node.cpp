@@ -1395,6 +1395,7 @@ public:
         
         // Load parameters
         private_nh.param<double>("gravity_magnitude", gravity_magnitude_, 9.81);
+        private_nh.param<double>("artificial_gps_noise", artificial_gps_noise_, 0);// 1cm - for testing
         
         // Realistic IMU noise parameters
         private_nh.param<double>("imu_acc_noise", imu_acc_noise_, 0.03);    // m/s²
@@ -1867,6 +1868,8 @@ private:
 
     // Gravity vector in world frame (ENU, Z-up)
     Eigen::Vector3d gravity_world_;
+
+    double artificial_gps_noise_;
     
     // ==================== VISUALIZATION METHODS ====================
 
@@ -2656,18 +2659,16 @@ private:
             Eigen::Vector3d enu_position = convertGpsToEnu(msg->latitude, msg->longitude, msg->altitude);
 
             // TESTING: Add artificial noise to GPS position if in test mode
-            if (true) {
-                //double gps_noise_magnitude_ = 5.0;
-                double gps_noise_magnitude_ = 0; // gps_position_noise_;
+            if (abs(artificial_gps_noise_) > 1e-3) {
                 // Only add noise to every nth message to create visible outliers
                 static int msg_counter = 0;
 
                 if(msg_counter % 1== 0){
                 
                 // Generate random noise
-                double noise_x = ((double)rand() / RAND_MAX * 2.0 - 1.0) * gps_noise_magnitude_;
-                double noise_y = ((double)rand() / RAND_MAX * 2.0 - 1.0) * gps_noise_magnitude_;
-                double noise_z = ((double)rand() / RAND_MAX * 2.0 - 1.0) * gps_noise_magnitude_ * 0.5;
+                double noise_x = ((double)rand() / RAND_MAX * 2.0 - 1.0) * artificial_gps_noise_;
+                double noise_y = ((double)rand() / RAND_MAX * 2.0 - 1.0) * artificial_gps_noise_;
+                double noise_z = ((double)rand() / RAND_MAX * 2.0 - 1.0) * artificial_gps_noise_ * 0.5;
                 
                 // Add the noise
                 Eigen::Vector3d original_position = enu_position;

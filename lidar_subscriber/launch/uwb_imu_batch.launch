@@ -7,6 +7,11 @@
      <arg name="bias_log_path" default="$(find toyslam)/../../../data/bias.txt" 
          doc="Path for the optimization bias log file (summary/computation). Empty generates default name." />
      <!--$(find toyslam)/../../../data/bias.txt Yixin's bias.txt address-->
+
+      <!-- set artificial noise for simulated gps loosely coupled input, if the magnitude is 0m it will not add noise -->
+     <arg name="artificial_gps_noise" default="0" 
+         doc="Artificial noise for simulated GPS loosely coupled input (m). Set to 0 to disable." />
+
      <!--Most Critical: Gravity Acc-->
      <arg name="gravity_magnitude" default="9.785" 
          doc="Gravity acceleration in m/s². Default is 9.785 m/s². for Hong Kong, it can vary depends on the latitude" />
@@ -175,6 +180,7 @@
         <!-- Pass all parameters to the node -->
 
         <param name="gravity_magnitude" value="$(arg gravity_magnitude)" />
+        <param name="artificial_gps_noise" value="$(arg artificial_gps_noise)" />
 
         <!-- Log file paths -->
           <param name="results_log_path" value="$(arg results_log_path)" />
