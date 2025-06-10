@@ -1,15 +1,15 @@
 <launch>
 
-     <arg name="results_log_path" default="$(find toyslam)/../../../data/results.txt" 
+     <arg name="results_log_path" default="$(find toyslam)/../data/results.txt" 
          doc="Path for the optimization results log file (parameters). Empty generates default name." />
-     <arg name="metrics_log_path" default="$(find toyslam)/../../../data/metrics.txt" 
+     <arg name="metrics_log_path" default="$(find toyslam)/../data/metrics.txt" 
          doc="Path for the optimization metrics log file (summary/computation). Empty generates default name." />
-     <arg name="bias_log_path" default="$(find toyslam)/../../../data/bias.txt" 
+     <arg name="bias_log_path" default="$(find toyslam)/../data/bias.txt" 
          doc="Path for the optimization bias log file (summary/computation). Empty generates default name." />
      <!--$(find toyslam)/../../../data/bias.txt Yixin's bias.txt address-->
 
       <!-- set artificial noise for simulated gps loosely coupled input, if the magnitude is 0m it will not add noise -->
-     <arg name="artificial_gps_noise" default="0" 
+     <arg name="artificial_gps_noise" default="2" 
          doc="Artificial noise for simulated GPS loosely coupled input (m). Set to 0 to disable." />
 
      <!--Most Critical: Gravity Acc-->
@@ -36,7 +36,7 @@
     
     <!-- CRITICAL: When true, GPS velocity is used to initialize velocity at each keyframe -->
     <!-- This is essential for stable velocity estimation -->
-    <arg name="use_gps_velocity" default="true" 
+    <arg name="use_gps_velocity" default="false" 
          doc="Use GPS velocity to initialize each keyframe. If enable_velocity_constraint is false, GPS velocity is only used for initialization, not as a constraint." />
 
     <!-- ============================== TOPIC NAMES ============================== -->
@@ -69,11 +69,11 @@
          doc="Gyroscope white noise (rad/s). Higher values trust gyroscope less." />
     <arg name="imu_acc_bias_noise" default="0.0001"
          doc="Accelerometer bias noise (m/s²). Higher values allow more IMU influence." />
-    <arg name="imu_gyro_bias_noise" default="0.0001"
+    <arg name="imu_gyro_bias_noise" default="0.00001"
          doc="Gyroscope bias noise (rad/s). Higher values allow more IMU influence." />
     
     <!-- GPS noise parameters - affect how tightly estimates adhere to GPS -->
-    <arg name="gps_position_noise" default="5" 
+    <arg name="gps_position_noise" default="2" 
          doc="GPS position measurement noise (m). Higher values allow more IMU influence." />
     <arg name="gps_velocity_noise" default="0.1" 
          doc="GPS velocity measurement noise (m/s). Higher values allow more IMU influence." />
@@ -114,7 +114,7 @@
     <!-- CORE FEATURES -->
     <arg name="enable_bias_estimation" default="true" 
          doc="Estimate and correct for IMU biases. Almost always should be enabled." />
-    <arg name="enable_marginalization" default="true" 
+    <arg name="enable_marginalization" default="false" 
          doc="Use marginalization to maintain information from older keyframes. Improves stability." />
     
     <!-- ORIENTATION FEATURES -->

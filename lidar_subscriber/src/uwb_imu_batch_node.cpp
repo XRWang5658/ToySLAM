@@ -14,6 +14,8 @@
 #include <cmath>
 #include <limits>
 #include <chrono>
+#include <sys/stat.h> // For file existence check
+#include <libgen.h>
 #include <novatel_msgs/INSPVAX.h>  // Added INSPVAX message header
 
 // Added for visualization
@@ -25,15 +27,15 @@
 #include <fstream>  // For std::ofstream
 
 // Added for cooridnate frame conversions
-#include "../include/gnss_tools.h"
-GNSS_Tools m_GNSS_Tools;
+// #include "../include/gnss_tools.h"
+// GNSS_Tools m_GNSS_Tools;
 
-#include "../include/imu_preint.h"
-#include "../include/imu_factor.h"
+// #include "../include/imu_preint.h"
+// #include "../include/imu_factor.h"
 
 // added for logging result from ceres, and other information inlcuding computation load
-#include "../include/ceres_logger.h"
-#include "../include/utility.h"
+// #include "../include/ceres_logger.h"
+// #include "../include/utility.h"
 
 /**
  * @brief Converts velocity from RFU (Right-Forward-Up) coordinate system to ENU (East-North-Up) coordinate system.
@@ -109,6 +111,622 @@ void saveEigenMatrixToCSV(const Eigen::MatrixXd& matrix, const std::string& file
         ROS_ERROR("Unable to open file %s for writing.", filename.c_str());
     }
 }
+
+// ceres logger class, used to log the results from ceres optimization
+// Helper function to check if a file exists
+bool fileExists(const std::string& filename) {
+    struct stat buffer;
+    return (stat(filename.c_str(), &buffer) == 0);
+}
+
+/**
+ * @class CeresLogger
+ * @brief Logs Ceres Solver results and metrics to two separate, persistent files.
+ *
+ * This class manages two log files:
+ * 1. Results File: Stores optimized parameters and metadata for each run.
+ * 2. Metrics File: Stores Solver Summary (computation metrics) and metadata for each run.
+ *
+ * It supports logging static configuration once at the beginning and appending
+ * records for each subsequent optimization run.
+ */
+class CeresLogger {
+public:
+    /**
+     * @brief Default Constructor.
+     * Initializes logger with empty filenames and default settings.
+     * Filenames MUST be set later using the initialize() method before logging.
+     */
+    CeresLogger()
+        : precision_(8),
+          summary_set_(false)
+    {
+        // Filenames are default-initialized to empty strings
+        // std::cout << "CeresLogger Default Constructed" << std::endl; // For debugging
+    }
+    /**
+     * @brief Constructor. Initializes the logger with paths for the two log files.
+     * @param results_filename Path for the file storing optimization results (parameters).
+     * @param metrics_filename Path for the file storing computation metrics (Solver Summary).
+     */
+    explicit CeresLogger(std::string results_filename, std::string metrics_filename)
+        : results_filename_(std::move(results_filename)),
+          metrics_filename_(std::move(metrics_filename)),
+          precision_(8), // Default floating-point precision for output
+          summary_set_(false) {}
+
+    // Default destructor is sufficient
+    ~CeresLogger() = default;
+
+    /**
+     * @brief Initializes or re-initializes the logger with specific filenames.
+     * MUST be called after default construction and before the first log() call
+     * if the default constructor was used.
+     * @param results_filename Path for the results log file (parameters).
+     * @param metrics_filename Path for the metrics log file (summary).
+     */
+    void initialize(std::string results_filename, std::string metrics_filename) {
+        std::lock_guard<std::mutex> lock(mtx_); // Lock for thread safety during initialization
+        results_filename_ = std::move(results_filename);
+        metrics_filename_ = std::move(metrics_filename);
+        // Reset other states if re-initializing? Typically not needed if only called once.
+        // metadata_.clear();
+        // optimized_parameters_.clear();
+        // summary_set_ = false;
+        // std::cout << "CeresLogger Initialized with filenames" << std::endl; // For debugging
+    }
+
+    // Delete copy constructor and assignment operator to prevent accidental copying
+    // If copying is needed, implement proper deep copy logic.
+    CeresLogger(const CeresLogger&) = delete;
+    CeresLogger& operator=(const CeresLogger&) = delete;
+
+    // Allow move constructor and assignment (optional, but good practice)
+    CeresLogger(CeresLogger&&) = default;
+    CeresLogger& operator=(CeresLogger&&) = default;
+
+
+    // --- Configuration and Data Addition Methods ---
+
+    /**
+     * @brief Sets the Solver Summary obtained after calling ceres::Solve.
+     * This marks the logger as ready to log a full optimization run entry.
+     * @param summary The summary object from ceres::Solve.
+     */
+    void setSummary(const ceres::Solver::Summary& summary) {
+        std::lock_guard<std::mutex> lock(mtx_); // Lock for thread safety
+        summary_ = summary; // Stores a copy
+        summary_set_ = true;
+    }
+
+    /**
+     * @brief Adds a block of optimized parameters (from std::vector) to be logged.
+     * @param name Descriptive name for the parameter block (e.g., "State_0_Pose").
+     * @param values Vector containing the optimized parameter values.
+     */
+    void addParameterBlock(const std::string& name, const std::vector<double>& values) {
+        std::lock_guard<std::mutex> lock(mtx_);
+        optimized_parameters_[name] = values;
+    }
+
+    /**
+     * @brief Adds a block of optimized parameters (from a C-style array) to be logged.
+     * @param name Descriptive name for the parameter block.
+     * @param values Pointer to the start of the C-style array of doubles.
+     * @param count Number of elements in the array.
+     */
+    void addParameterBlock(const std::string& name, const double* values, size_t count) {
+        std::lock_guard<std::mutex> lock(mtx_);
+        // Create a vector from the C-array data
+        optimized_parameters_[name] = std::vector<double>(values, values + count);
+    }
+
+    /**
+     * @brief Sets all optimized parameters at once, replacing any previously added for the current run.
+     * @param parameters Map of parameter block names to their value vectors.
+     */
+    void setParameterBlocks(const std::map<std::string, std::vector<double>>& parameters) {
+        std::lock_guard<std::mutex> lock(mtx_);
+        optimized_parameters_ = parameters;
+    }
+
+    /**
+     * @brief Adds a single metadata entry (key-value pair). Use this for both static and dynamic metadata.
+     * @param key Metadata key (e.g., "Optimization Run", "Config: IMU Acc Noise").
+     * @param value Metadata value as a string.
+     */
+    void addMetadata(const std::string& key, const std::string& value) {
+        std::lock_guard<std::mutex> lock(mtx_);
+        metadata_[key] = value;
+    }
+
+    /**
+     * @brief Sets all metadata at once, replacing any previously added for the current logging cycle.
+     * @param metadata Map of metadata keys to values.
+     */
+    void setMetadata(const std::map<std::string, std::string>& metadata) {
+        std::lock_guard<std::mutex> lock(mtx_);
+        metadata_ = metadata;
+    }
+
+    /**
+     * @brief Sets the precision for logging floating-point numbers.
+     * @param precision Number of digits after the decimal point.
+     */
+    void setPrecision(int precision) {
+        std::lock_guard<std::mutex> lock(mtx_);
+        precision_ = precision;
+    }
+
+    // --- Getter Methods ---
+
+    /**
+     * @brief Gets the filename used for storing results (parameters).
+     * @return Constant reference to the results filename string.
+     */
+    const std::string& getResultsFilename() const { return results_filename_; }
+
+    /**
+     * @brief Gets the filename used for storing metrics (solver summary).
+     * @return Constant reference to the metrics filename string.
+     */
+    const std::string& getMetricsFilename() const { return metrics_filename_; }
+
+
+    // --- Core Logging Method ---
+
+    /**
+     * @brief Logs the current entry. Clears files on the first call (static config), appends otherwise.
+     * Handles two modes:
+     * 1. Initial Static Log: If setSummary() has NOT been called, assumes this call
+     * is for static config. Opens files in OVERWRITE mode (std::ios::trunc),
+     * writes static header and metadata.
+     * 2. Regular Run Log: If setSummary() HAS been called, assumes this call is for
+     * a specific run. Opens files in APPEND mode (std::ios::app), writes run separator,
+     * dynamic metadata, summary (metrics file), and parameters (results file).
+     * Resets internal state after logging.
+     * @return true if writing was successful, false otherwise.
+     */
+    bool log() {
+        std::lock_guard<std::mutex> lock(mtx_); // Lock for thread safety
+
+        // Ensure filenames are set before proceeding
+        if (results_filename_.empty() || metrics_filename_.empty()) {
+            std::cerr << "Error: Logger filenames not set. Call initialize() before log()." << std::endl;
+            return false;
+        }
+
+        // Determine if this is the initial call for static config
+        bool is_initial_static_log = !summary_set_;
+
+        // Basic validation for regular run logs
+        if (!is_initial_static_log && !summary_set_) {
+            std::cerr << "Error: log() called for a run entry, but Solver Summary was not set." << std::endl;
+            return false;
+        }
+        // Prevent logging empty initial static config
+        if (is_initial_static_log && metadata_.empty() && optimized_parameters_.empty()) {
+             std::cerr << "Warning: log() called for initial static configuration, but no metadata or parameters were added." << std::endl;
+             resetForNextRunInternal();
+             return true; // Nothing to write, consider it success.
+        }
+
+        // ★★★ Determine file open mode based on whether it's the initial log ★★★
+        std::ios_base::openmode results_mode = std::ios::out; // Default to overwrite for safety
+        std::ios_base::openmode metrics_mode = std::ios::out; // Default to overwrite
+
+        if (is_initial_static_log) {
+            // For the very first write (static config), TRUNCATE the files
+            results_mode = std::ios::out | std::ios::trunc;
+            metrics_mode = std::ios::out | std::ios::trunc;
+             // std::cout << "Opening logs in TRUNCATE mode for static config." << std::endl; // Debug
+        } else {
+            // For subsequent writes (runs), APPEND to the files
+            results_mode = std::ios::app;
+            metrics_mode = std::ios::app;
+             // std::cout << "Opening logs in APPEND mode for run entry." << std::endl; // Debug
+        }
+
+        // ★★★ Ensure files exist before opening ★★★
+        if (!fileExists(results_filename_)) {
+            std::ofstream temp_file(results_filename_);
+            temp_file.close();
+        }
+        if (!fileExists(metrics_filename_)) {
+            std::ofstream temp_file(metrics_filename_);
+            temp_file.close();
+        }
+
+        // Open files using the determined mode
+        std::ofstream results_file(results_filename_, results_mode);
+        std::ofstream metrics_file(metrics_filename_, metrics_mode);
+
+        // Check if files opened successfully
+        if (!results_file.is_open()) {
+            std::cerr << "Error: Could not open results log file ("
+                      << (is_initial_static_log ? "overwrite" : "append")
+                      << "): " << results_filename_ << std::endl;
+            if (metrics_file.is_open()) metrics_file.close();
+            resetForNextRunInternal();
+            return false;
+        }
+        if (!metrics_file.is_open()) {
+            std::cerr << "Error: Could not open metrics log file ("
+                      << (is_initial_static_log ? "overwrite" : "append")
+                      << "): " << metrics_filename_ << std::endl;
+            results_file.close();
+            resetForNextRunInternal();
+            return false;
+        }
+
+        // Apply formatting settings
+        results_file << std::fixed << std::setprecision(precision_);
+        metrics_file << std::fixed << std::setprecision(precision_);
+
+        // --- Write Header/Separator ---
+        if (is_initial_static_log) {
+            writeStaticHeader(results_file);
+            writeStaticHeader(metrics_file);
+        } else {
+            writeRunSeparator(results_file);
+            writeRunSeparator(metrics_file);
+        }
+
+        // --- Write Metadata Section ---
+        writeMetadataSection(results_file);
+        writeMetadataSection(metrics_file);
+
+        // --- Write Specific Sections (Only for dynamic run logs) ---
+        if (!is_initial_static_log) {
+            writeSummarySection(metrics_file);
+            writeParametersSection(results_file);
+        }
+
+        // --- Add extra spacing & Close files ---
+        results_file << "\n" << std::endl;
+        metrics_file << "\n" << std::endl;
+        results_file.close();
+        metrics_file.close();
+
+        bool success = results_file.good() && metrics_file.good();
+
+        // --- Reset internal state ---
+        resetForNextRunInternal();
+
+        return success;
+    }
+
+
+private:
+    // --- Member Variables ---
+    std::string results_filename_; ///< Path to the results log file (parameters).
+    std::string metrics_filename_; ///< Path to the metrics log file (summary).
+    ceres::Solver::Summary summary_; ///< Stores the latest solver summary.
+    std::map<std::string, std::vector<double>> optimized_parameters_; ///< Stores parameters for the current log cycle.
+    std::map<std::string, std::string> metadata_; ///< Stores metadata for the current log cycle.
+    int precision_; ///< Floating point precision for output.
+    bool summary_set_; ///< Flag indicating if summary has been set for the current run cycle.
+    std::mutex mtx_; ///< Mutex for thread safety.
+
+    // --- Private Helper Methods ---
+
+    /**
+     * @brief Writes a standard separator and header for a dynamic optimization run entry.
+     * Uses "Optimization Run" metadata key to identify the run number.
+     */
+    void writeRunSeparator(std::ofstream& stream) const {
+        stream << "======================================================================\n";
+        std::string run_number_str = "(Run number metadata missing)";
+        auto it = metadata_.find("Optimization Run");
+        if (it != metadata_.end()) {
+            run_number_str = it->second;
+        } else {
+             // Warn if the crucial run number is missing for a dynamic entry
+            //  std::cerr << "Warning: 'Optimization Run' metadata missing for this log entry." << std::endl;
+        }
+
+        // Get current timestamp for this specific log entry
+        auto t = std::time(nullptr);
+        auto tm = *std::localtime(&t);
+        std::stringstream timestamp_ss;
+        timestamp_ss << std::put_time(&tm, "%Y-%m-%d %H:%M:%S %Z"); // e.g., 2025-05-06 12:43:39 PDT
+
+        stream << "--- Optimization Run: " << run_number_str
+               << " (Logged at: " << timestamp_ss.str() << ") ---\n";
+        stream << "======================================================================\n\n";
+    }
+
+    /**
+     * @brief Writes a distinct header for the initial static configuration block.
+     */
+    void writeStaticHeader(std::ofstream& stream) const {
+         stream << "//////////////////////////////////////////////////////////////////////\n";
+         stream << "//                  STATIC CONFIGURATION PARAMETERS                   //\n";
+         auto t = std::time(nullptr); // Timestamp when static config was logged
+         auto tm = *std::localtime(&t);
+         std::stringstream timestamp_ss;
+         timestamp_ss << std::put_time(&tm, "%Y-%m-%d %H:%M:%S %Z");
+         stream << "// Logged at: " << timestamp_ss.str() << "                            //\n";
+         stream << "//////////////////////////////////////////////////////////////////////\n\n";
+    }
+
+    /**
+     * @brief Writes the stored metadata key-value pairs to the given stream.
+     */
+    void writeMetadataSection(std::ofstream& stream) const {
+        if (!metadata_.empty()) {
+            stream << "[Metadata]" << std::endl;
+            // Optionally sort by key for consistent order in the log file
+            std::map<std::string, std::string> sorted_metadata = metadata_;
+            for (const auto& pair : sorted_metadata) {
+                stream << pair.first << ": " << pair.second << std::endl;
+            }
+            stream << std::endl;
+        }
+    }
+
+    /**
+     * @brief Writes the detailed Ceres Solver Summary information to the given stream.
+     * This represents the computation metrics.
+     */
+    void writeSummarySection(std::ofstream& stream) const {
+        stream << "[Solver Summary & Metrics]" << std::endl;
+        stream << "Termination Type: " << ceres::TerminationTypeToString(summary_.termination_type) << std::endl;
+        stream << "Message: " << summary_.message << std::endl;
+        stream << "Total Time (s): " << summary_.total_time_in_seconds << std::endl;
+        stream << std::endl;
+        stream << "Cost:" << std::endl;
+        stream << "  Initial: " << summary_.initial_cost << std::endl;
+        stream << "  Final: " << summary_.final_cost << std::endl;
+        stream << "  Change: " << summary_.initial_cost - summary_.final_cost << std::endl;
+        stream << std::endl;
+        stream << "Iterations:" << std::endl;
+        // Use num_successful_steps + num_unsuccessful_steps for minimizer iterations
+        stream << "  Minimizer: " << summary_.num_successful_steps + summary_.num_unsuccessful_steps << " (" << summary_.iterations.size() << " recorded)" << std::endl;
+        // ★★★ Corrected Line 1 ★★★
+        stream << "  Linear Solves: " << summary_.num_linear_solves << std::endl; // Changed label and member name
+        stream << std::endl;
+        stream << "Evaluations:" << std::endl;
+        // ★★★ Corrected Line 2 ★★★
+        stream << "  Residual Evaluations: " << summary_.num_residual_evaluations << std::endl; // Changed label and member name
+        // ★★★ Corrected Line 3 ★★★
+        stream << "  Jacobian Evaluations: " << summary_.num_jacobian_evaluations << std::endl; // Changed label and member name
+        stream << std::endl;
+        stream << "Time Breakdown (s):" << std::endl;
+        stream << "  Preprocessor: " << summary_.preprocessor_time_in_seconds << std::endl;
+        stream << "  Minimizer: " << summary_.minimizer_time_in_seconds << std::endl;
+        // Ensure these time breakdowns are available in your Ceres version as well
+        stream << "    - Residual Evaluation: " << summary_.residual_evaluation_time_in_seconds << std::endl;
+        stream << "    - Jacobian Evaluation: " << summary_.jacobian_evaluation_time_in_seconds << std::endl;
+        stream << "    - Linear Solver: " << summary_.linear_solver_time_in_seconds << std::endl;
+        stream << "  Postprocessor: " << summary_.postprocessor_time_in_seconds << std::endl;
+        stream << std::endl;
+        stream << "Linear Solver Type Used: " << ceres::LinearSolverTypeToString(summary_.linear_solver_type_used) << std::endl;
+        stream << std::endl;
+    }
+
+    /**
+     * @brief Writes the stored optimized parameter blocks to the given stream.
+     * This represents the optimization results.
+     */
+    void writeParametersSection(std::ofstream& stream) const {
+        // (Implementation is identical to the previous version - no changes needed here)
+        stream << "[Optimized Parameters]" << std::endl;
+        if (optimized_parameters_.empty()) {
+            stream << "No optimized parameters provided or added for this run." << std::endl;
+        } else {
+             // Optionally sort by key for consistent order
+            std::map<std::string, std::vector<double>> sorted_params = optimized_parameters_;
+            for (const auto& pair : sorted_params) {
+                stream << pair.first << ":" << std::endl;
+                stream << "  Values [";
+                for (size_t i = 0; i < pair.second.size(); ++i) {
+                    stream << pair.second[i] << (i == pair.second.size() - 1 ? "" : ", ");
+                }
+                stream << "]" << std::endl;
+                stream << "  Dimension: " << pair.second.size() << std::endl;
+            }
+        }
+        stream << std::endl;
+    }
+
+    /**
+     * @brief Resets the internal state after logging, preparing for the next run cycle.
+     * Clears stored metadata, parameters, and the summary flag.
+     * (Internal helper, assumes mutex is already held by the caller - log()).
+     */
+    void resetForNextRunInternal() {
+        metadata_.clear();
+        optimized_parameters_.clear();
+        summary_set_ = false;
+        // summary_ object content will be overwritten by the next setSummary call
+    }
+}; // End of CeresLogger class
+
+// Utility class for various mathematical operations
+
+class Utility
+{
+  public:
+    template <typename Derived>
+    static Eigen::Quaternion<typename Derived::Scalar> deltaQ(const Eigen::MatrixBase<Derived> &theta)
+    {
+        typedef typename Derived::Scalar Scalar_t;
+        Scalar_t theta_norm = theta.norm();
+        Eigen::Quaternion<Scalar_t> dq;
+
+        if (theta_norm < static_cast<Scalar_t>(1e-10)) {
+            dq.coeffs().setZero(); // coeffs 是 [x, y, z, w]
+            dq.w() = static_cast<Scalar_t>(1.0);
+        } else {
+            Eigen::Matrix<Scalar_t, 3, 1> axis = theta / theta_norm;
+            Scalar_t half_angle = theta_norm / static_cast<Scalar_t>(2.0);
+            Scalar_t sin_half_angle = sin(half_angle);
+            dq.w() = cos(half_angle);
+            dq.x() = sin_half_angle * axis.x();
+            dq.y() = sin_half_angle * axis.y();
+            dq.z() = sin_half_angle * axis.z();
+            dq.normalize(); 
+        }
+        return dq;
+    }
+
+    template <typename Derived>
+    static Eigen::Matrix<typename Derived::Scalar, 3, 3> skewSymmetric(const Eigen::MatrixBase<Derived> &q)
+    {
+        Eigen::Matrix<typename Derived::Scalar, 3, 3> ans;
+        ans << typename Derived::Scalar(0), -q(2), q(1),
+            q(2), typename Derived::Scalar(0), -q(0),
+            -q(1), q(0), typename Derived::Scalar(0);
+        return ans;
+    }
+
+    template <typename Derived>
+    static Eigen::Quaternion<typename Derived::Scalar> positify(const Eigen::QuaternionBase<Derived> &q)
+    {
+        //printf("a: %f %f %f %f", q.w(), q.x(), q.y(), q.z());
+        //Eigen::Quaternion<typename Derived::Scalar> p(-q.w(), -q.x(), -q.y(), -q.z());
+        //printf("b: %f %f %f %f", p.w(), p.x(), p.y(), p.z());
+        //return q.template w() >= (typename Derived::Scalar)(0.0) ? q : Eigen::Quaternion<typename Derived::Scalar>(-q.w(), -q.x(), -q.y(), -q.z());
+        return q;
+    }
+
+    template <typename Derived>
+    static Eigen::Matrix<typename Derived::Scalar, 4, 4> Qleft(const Eigen::QuaternionBase<Derived> &q)
+    {
+        Eigen::Quaternion<typename Derived::Scalar> qq = positify(q);
+        Eigen::Matrix<typename Derived::Scalar, 4, 4> ans;
+        ans(0, 0) = qq.w(), ans.template block<1, 3>(0, 1) = -qq.vec().transpose();
+        ans.template block<3, 1>(1, 0) = qq.vec(), ans.template block<3, 3>(1, 1) = qq.w() * Eigen::Matrix<typename Derived::Scalar, 3, 3>::Identity() + skewSymmetric(qq.vec());
+        return ans;
+    }
+
+    template <typename Derived>
+    static Eigen::Matrix<typename Derived::Scalar, 4, 4> Qright(const Eigen::QuaternionBase<Derived> &p)
+    {
+        Eigen::Quaternion<typename Derived::Scalar> pp = positify(p);
+        Eigen::Matrix<typename Derived::Scalar, 4, 4> ans;
+        ans(0, 0) = pp.w(), ans.template block<1, 3>(0, 1) = -pp.vec().transpose();
+        ans.template block<3, 1>(1, 0) = pp.vec(), ans.template block<3, 3>(1, 1) = pp.w() * Eigen::Matrix<typename Derived::Scalar, 3, 3>::Identity() - skewSymmetric(pp.vec());
+        return ans;
+    }
+
+    static Eigen::Vector3d R2ypr(const Eigen::Matrix3d &R)
+    {
+        Eigen::Vector3d n = R.col(0);
+        Eigen::Vector3d o = R.col(1);
+        Eigen::Vector3d a = R.col(2);
+
+        Eigen::Vector3d ypr(3);
+        double y = atan2(n(1), n(0));
+        double p = atan2(-n(2), n(0) * cos(y) + n(1) * sin(y));
+        double r = atan2(a(0) * sin(y) - a(1) * cos(y), -o(0) * sin(y) + o(1) * cos(y));
+        ypr(0) = y;
+        ypr(1) = p;
+        ypr(2) = r;
+
+        return ypr / M_PI * 180.0;
+    }
+
+    template <typename Derived>
+    static Eigen::Matrix<typename Derived::Scalar, 3, 3> ypr2R(const Eigen::MatrixBase<Derived> &ypr)
+    {
+        typedef typename Derived::Scalar Scalar_t;
+
+        Scalar_t y = ypr(0) / 180.0 * M_PI;
+        Scalar_t p = ypr(1) / 180.0 * M_PI;
+        Scalar_t r = ypr(2) / 180.0 * M_PI;
+
+        Eigen::Matrix<Scalar_t, 3, 3> Rz;
+        Rz << cos(y), -sin(y), 0,
+            sin(y), cos(y), 0,
+            0, 0, 1;
+
+        Eigen::Matrix<Scalar_t, 3, 3> Ry;
+        Ry << cos(p), 0., sin(p),
+            0., 1., 0.,
+            -sin(p), 0., cos(p);
+
+        Eigen::Matrix<Scalar_t, 3, 3> Rx;
+        Rx << 1., 0., 0.,
+            0., cos(r), -sin(r),
+            0., sin(r), cos(r);
+
+        return Rz * Ry * Rx;
+    }
+
+    static Eigen::Matrix3d g2R(const Eigen::Vector3d &g);
+
+    template <size_t N>
+    struct uint_
+    {
+    };
+
+    template <size_t N, typename Lambda, typename IterT>
+    void unroller(const Lambda &f, const IterT &iter, uint_<N>)
+    {
+        unroller(f, iter, uint_<N - 1>());
+        f(iter + N);
+    }
+
+    template <typename Lambda, typename IterT>
+    void unroller(const Lambda &f, const IterT &iter, uint_<0>)
+    {
+        f(iter);
+    }
+
+    template <typename T>
+    static T normalizeAngle(const T& angle_degrees) {
+      T two_pi(2.0 * 180);
+      if (angle_degrees > 0)
+      return angle_degrees -
+          two_pi * std::floor((angle_degrees + T(180)) / two_pi);
+      else
+        return angle_degrees +
+            two_pi * std::floor((-angle_degrees + T(180)) / two_pi);
+    };
+};
+
+class FileSystemHelper
+{
+  public:
+
+    /******************************************************************************
+     * Recursively create directory if `path` not exists.
+     * Return 0 if success.
+     *****************************************************************************/
+    static int createDirectoryIfNotExists(const char *path)
+    {
+        struct stat info;
+        int statRC = stat(path, &info);
+        if( statRC != 0 )
+        {
+            if (errno == ENOENT)  
+            {
+                printf("%s not exists, trying to create it \n", path);
+                if (! createDirectoryIfNotExists(dirname(strdupa(path))))
+                {
+                    if (mkdir(path, S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH) != 0)
+                    {
+                        fprintf(stderr, "Failed to create folder %s \n", path);
+                        return 1;
+                    }
+                    else
+                        return 0;
+                }
+                else 
+                    return 1;
+            } // directory not exists
+            if (errno == ENOTDIR) 
+            { 
+                fprintf(stderr, "%s is not a directory path \n", path);
+                return 1; 
+            } // something in path prefix is not a dir
+            return 1;
+        }
+        return ( info.st_mode & S_IFDIR ) ? 0 : 1;
+    }
+};
 
 // Custom parameterization for pose (position + quaternion)
 class PoseParameterization : public ceres::LocalParameterization {
@@ -720,6 +1338,568 @@ struct ResidualBlockInfo {
     Eigen::VectorXd residuals;
 };
 
+// ===================== IMU PREINTEGRATION CLASSES =====================
+enum StateOrder {
+    O_P = 0,
+    O_R = 3,
+    O_V = 6,
+    O_BA = 9,
+    O_BG = 12,
+};
+
+class imu_preint
+{
+public:
+    // constructor
+    imu_preint(){
+        // initialize the parameters
+        ba.setZero();
+        bg.setZero();
+
+        alpha.setZero();
+        beta.setZero();
+        gamma.setIdentity();
+
+        alpha_new.setZero();
+        beta_new.setZero();
+        gamma_new.setIdentity();
+
+        stamp_buf.clear();
+        acc_buf.clear();
+        gyro_buf.clear();
+
+        sum_dt = 0.0;
+        jacobian.setIdentity();
+        covariance.setIdentity();
+        covariance = 1e-8 * covariance;
+        covariance.setZero();
+
+        // set default gravity  
+        set_gravity(9.785);
+        // set default noise
+        set_noise(0.01, 0.01, 0.01, 0.01);
+        // set default bias
+        setBias(Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero());
+    }
+
+    bool set_noise(const double ACC_N, const double GYR_N, const double ACC_W, const double GYR_W){
+        acc_noise_sigma_ = ACC_N;
+        gyro_noise_sigma_ = GYR_N;
+        acc_bias_walk_sigma_continuous_ = ACC_W;
+        gyro_bias_walk_sigma_continuous_ = GYR_W;
+
+        noise = Eigen::Matrix<double, 18, 18>::Zero();
+        noise.block<3, 3>(0, 0) =  (ACC_N * ACC_N) * Eigen::Matrix3d::Identity();
+        noise.block<3, 3>(3, 3) =  (GYR_N * GYR_N) * Eigen::Matrix3d::Identity();
+        noise.block<3, 3>(6, 6) =  (ACC_N * ACC_N) * Eigen::Matrix3d::Identity();
+        noise.block<3, 3>(9, 9) =  (GYR_N * GYR_N) * Eigen::Matrix3d::Identity();
+        noise.block<3, 3>(12, 12) =  (ACC_W * ACC_W) * Eigen::Matrix3d::Identity();
+        noise.block<3, 3>(15, 15) =  (GYR_W * GYR_W) * Eigen::Matrix3d::Identity();
+    }
+
+    bool push_back(double stamp, const Eigen::Vector3d &acc, const Eigen::Vector3d &gyro)
+    {
+        // store the IMU data
+        stamp_buf.push_back(stamp);
+        acc_buf.push_back(acc);
+        gyro_buf.push_back(gyro);
+
+        // ROS_INFO("IMU data pushed back: %f", stamp);
+
+        // if this is the first IMU data, return directly to avoid integration
+        if (stamp_buf.size() <= 1)
+        {
+            // ROS_WARN("First IMU data, no integration needed");
+            return true;
+        }
+        // else, perform the integration in real time
+
+        if(!propagate(stamp_buf.size() - 1))
+        {   
+            ROS_WARN("IMU data propagation failed");
+            return false;
+        }
+
+        return true;
+    }
+
+    bool setBias(const Eigen::Vector3d &bias_acc, const Eigen::Vector3d &bias_gyro)
+    {
+        ba = bias_acc;
+        bg = bias_gyro;
+        return true;
+    }
+
+    bool set_gravity(double gravity_magnitude){
+        g_world = Eigen::Vector3d(0, 0, gravity_magnitude);
+        return true;
+    }
+
+    bool midpoint_integrate(double dt,
+                            const Eigen::Vector3d &raw_acc1, const Eigen::Vector3d &raw_acc2,
+                            const Eigen::Vector3d &raw_gyro1, const Eigen::Vector3d &raw_gyro2,
+                            const Eigen::Vector3d &_alpha, const Eigen::Vector3d &_beta, const Eigen::Quaterniond &_gamma,
+                            Eigen ::Vector3d &alpha_new, Eigen::Vector3d &beta_new, Eigen::Quaterniond &gamma_new, bool update_jacobian = true){
+        // calculate the midpoint gamma first
+        Eigen::Vector3d gyro_avg = 0.5 * (raw_gyro1 + raw_gyro2) - bg;
+
+        // calculate the new gamma
+        gamma_new = _gamma * Eigen::Quaterniond(1, 0.5* gyro_avg(0) * dt, 0.5* gyro_avg(1) * dt, 0.5* gyro_avg(2) * dt);
+        gamma_new.normalize();
+
+        // ROS_INFO("Midpoint gamma: %f %f %f %f", gamma_new.w(), gamma_new.x(), gamma_new.y(), gamma_new.z());
+
+        //translate the acceleration to the world frame
+        Eigen::Vector3d acc1 = _gamma * (raw_acc1 - ba);
+        Eigen::Vector3d acc2 = gamma_new * (raw_acc2 - ba);
+        Eigen::Vector3d acc_avg = 0.5 * (acc1 + acc2);
+
+        // calculate the new beta
+        beta_new = _beta + acc_avg * dt;
+
+        // calculate the new alpha
+        alpha_new = _alpha + _beta * dt + 0.5 * acc_avg * dt * dt;     
+        
+        // update the jacobian and covariance if requested
+        if(update_jacobian){
+            Eigen::Vector3d w_x_  = gyro_avg;
+            Eigen::Vector3d a0x = raw_acc1 - ba;
+            Eigen::Vector3d a1x = raw_acc2 - ba;
+            Eigen::Matrix3d R_w_x, R_a0x, R_a1x;
+
+            R_w_x << 0, -w_x_(2), w_x_(1),
+                     w_x_(2), 0, - w_x_(0),
+                     -w_x_(1), w_x_(0), 0;
+
+            R_a0x << 0, -a0x(2), a0x(1),
+                     a0x(2), 0, - a0x(0),
+                     -a0x(1), a0x(0), 0;
+
+            R_a1x << 0, -a1x(2), a1x(1),
+                     a1x(2), 0, - a1x(0),
+                     -a1x(1), a1x(0), 0;
+
+            Eigen::MatrixXd F = Eigen::Matrix<double, 15, 15>::Zero();
+            F.block<3, 3>(0, 0) = Eigen::Matrix3d::Identity();
+            F.block<3, 3>(0, 3) = -0.25 * _gamma.toRotationMatrix() * R_a0x * dt * dt + 
+                                  -0.25 * gamma_new.toRotationMatrix() * R_a1x * (Eigen::Matrix3d::Identity() - R_w_x * dt) * dt * dt;
+            F.block<3, 3>(0, 6) = Eigen::Matrix3d::Identity() * dt;
+            F.block<3, 3>(0, 9) = -0.25 * (_gamma.toRotationMatrix() + gamma_new.toRotationMatrix()) * dt * dt;
+            F.block<3, 3>(0, 12)= -0.25 * gamma_new.toRotationMatrix() * R_a1x * dt * dt * - dt;
+
+            F.block<3, 3>(3, 3) = Eigen::Matrix3d::Identity() - R_w_x * dt;
+            F.block<3, 3>(3, 12)= -1.0 * Eigen::Matrix3d::Identity() * dt;
+
+            F.block<3, 3>(6, 3) = -0.5 * _gamma.toRotationMatrix() * R_a0x * dt + 
+                                  -0.5 * gamma_new.toRotationMatrix() * R_a1x * (Eigen::Matrix3d::Identity() - R_w_x * dt) * dt;
+            F.block<3, 3>(6, 6) = Eigen::Matrix3d::Identity();
+            F.block<3, 3>(6, 9) = -0.5 * (_gamma.toRotationMatrix() + gamma_new.toRotationMatrix()) * dt;
+            F.block<3, 3>(6, 12)= -0.5 * gamma_new.toRotationMatrix() * R_a1x * dt * - dt;
+
+            F.block<3, 3>(9, 9) = Eigen::Matrix3d::Identity();
+            F.block<3, 3>(12,12)= Eigen::Matrix3d::Identity();
+
+            Eigen::MatrixXd V = Eigen::Matrix<double, 15, 18>::Zero();
+            V.block<3, 3>(0, 0) = 0.25 * _gamma.toRotationMatrix() * dt * dt;
+            V.block<3, 3>(0, 3) = - 0.25 * gamma_new.toRotationMatrix() * R_a1x * dt * dt * 0.5 * dt;
+            V.block<3, 3>(0, 6) = 0.25 * gamma_new.toRotationMatrix() * dt * dt;
+            V.block<3, 3>(0, 9) = V.block<3, 3>(0, 3);
+
+            V.block<3, 3>(3, 3) = 0.5 * Eigen::Matrix3d::Identity() * dt;
+            V.block<3, 3>(3, 9) = 0.5 * Eigen::Matrix3d::Identity() * dt;
+
+            V.block<3, 3>(6, 0) = 0.5 * _gamma.toRotationMatrix() * dt;
+            V.block<3, 3>(6, 3) = - 0.5 * gamma_new.toRotationMatrix() * R_a1x * dt * 0.5 * dt;
+            V.block<3, 3>(6, 6) = 0.5 * gamma_new.toRotationMatrix() * dt;
+            V.block<3, 3>(6, 9) = V.block<3, 3>(6, 3);
+
+            V.block<3, 3>(9, 12) = Eigen::Matrix3d::Identity() * dt;
+            V.block<3, 3>(12, 15)= Eigen::Matrix3d::Identity() * dt;
+
+            jacobian  = F * jacobian;
+            covariance = F * covariance * F.transpose() + V * noise * V.transpose();
+        }
+
+        return true;
+    }
+
+    bool propagate(int index){
+        // get the imu data at the given index
+        double dt = stamp_buf[index] - stamp_buf[index - 1];
+        if (dt <= 0.0)
+        {
+            ROS_INFO("imu preintegration error! dt <= 0.0");
+            return false;
+        }
+
+        if(dt < 1e-9)
+        {
+            ROS_WARN("IMU preintegration error! dt is too small");
+            return false;
+        }
+
+        Eigen::Vector3d raw_acc1 = acc_buf[index - 1];
+        Eigen::Vector3d raw_acc2 = acc_buf[index];
+        Eigen::Vector3d raw_gyro1 = gyro_buf[index - 1];
+        Eigen::Vector3d raw_gyro2 = gyro_buf[index];
+
+        Eigen::Vector3d alpha_propagated, beta_propagated;
+        Eigen::Quaterniond gamma_propagated;
+
+        if(!midpoint_integrate(dt, raw_acc1, raw_acc2, raw_gyro1, raw_gyro2, alpha, beta, gamma, alpha_propagated, beta_propagated, gamma_propagated, true))
+        {   
+            ROS_WARN("IMU preintegration error! midpoint integration failed");
+            return false;
+        }
+
+        // update the alpha, beta, gamma
+        alpha = alpha_propagated;
+        beta = beta_propagated;
+        gamma = gamma_propagated;
+
+        
+        sum_dt += dt;
+
+        return true;
+    }
+
+    bool repropagate(const Eigen::Vector3d &ba_new, const Eigen::Vector3d &bg_new)
+    {
+        // reset the bias
+        setBias(ba_new, bg_new);
+
+        // reset the variables
+        alpha.setZero();
+        beta.setZero();
+        gamma.setIdentity();
+        alpha_new.setZero();
+        beta_new.setZero();
+        gamma_new.setIdentity();
+        jacobian.setIdentity();
+        covariance.setZero();
+        sum_dt = 0.0;
+
+        // repropagate the IMU data
+        for (size_t i = 1; i < stamp_buf.size(); ++i)
+        {
+            if(!propagate(i))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    Eigen::Matrix<double, 15, 1> evaluate(
+        const Eigen::Vector3d &Pi, const Eigen::Quaterniond &Qi, const Eigen::Vector3d &Vi, const Eigen::Vector3d &Bai, const Eigen::Vector3d &Bgi,
+        const Eigen::Vector3d &Pj, const Eigen::Quaterniond &Qj, const Eigen::Vector3d &Vj, const Eigen::Vector3d &Baj, const Eigen::Vector3d &Bgj
+    ){
+        Eigen::Matrix<double, 15, 1> residuals;
+
+        Eigen::Matrix3d dp_dba = jacobian.block<3, 3>(O_P, O_BA);
+        Eigen::Matrix3d dp_dbg = jacobian.block<3, 3>(O_P, O_BG);
+
+        Eigen::Matrix3d dq_dbg = jacobian.block<3, 3>(O_R, O_BG);
+
+        Eigen::Matrix3d dv_dba = jacobian.block<3, 3>(O_V, O_BA);
+        Eigen::Matrix3d dv_dbg = jacobian.block<3, 3>(O_V, O_BG);
+
+        Eigen::Vector3d dba = Bai - ba;
+        Eigen::Vector3d dbg = Bgi - bg;
+
+        Eigen::Quaterniond corrected_delta_q = gamma * Utility::deltaQ(dq_dbg * dbg);
+        corrected_delta_q.normalize();
+        Eigen::Vector3d corrected_delta_v = beta + dv_dba * dba + dv_dbg * dbg;
+        Eigen::Vector3d corrected_delta_p = alpha + dp_dba * dba + dp_dbg * dbg;
+
+        residuals.block<3, 1>(O_P, 0) = Qi.inverse() * (0.5 * g_world * sum_dt * sum_dt + Pj - Pi - Vi * sum_dt) - corrected_delta_p;
+        residuals.block<3, 1>(O_R, 0) = 2 * (corrected_delta_q.inverse() * (Qi.inverse() * Qj)).vec();
+        residuals.block<3, 1>(O_V, 0) = Qi.inverse() * (g_world * sum_dt + Vj - Vi) - corrected_delta_v;
+        residuals.block<3, 1>(O_BA, 0) = Baj - Bai;
+        residuals.block<3, 1>(O_BG, 0) = Bgj - Bgi;
+        return residuals;
+    }
+
+    bool reset()
+    {
+
+        alpha.setZero();
+        beta.setZero();
+        gamma.setIdentity();
+
+        alpha_new.setZero();
+        beta_new.setZero();
+        gamma_new.setIdentity();
+
+        stamp_buf.clear();
+        acc_buf.clear();
+        gyro_buf.clear();
+
+        jacobian.setIdentity();
+        covariance.setIdentity();
+        covariance = 1e-8 * covariance;
+        covariance.setZero();
+
+        sum_dt = 0.0;
+
+        return true;
+    }
+
+    Eigen::MatrixXd get_jacobian() const
+    {
+        return jacobian;
+    }
+
+    double get_sum_dt() const
+    {
+        return sum_dt;
+    }
+
+    double getSumDt() const { return sum_dt; }
+
+    Eigen::Matrix3d getJacobianDpDba() const { return jacobian.block<3, 3>(O_P, O_BA); }
+    Eigen::Matrix3d getJacobianDpDbg() const { return jacobian.block<3, 3>(O_P, O_BG); }
+    Eigen::Matrix3d getJacobianDqDbg() const { return jacobian.block<3, 3>(O_R, O_BG); }
+    Eigen::Matrix3d getJacobianDvDba() const { return jacobian.block<3, 3>(O_V, O_BA); }
+    Eigen::Matrix3d getJacobianDvDbg() const { return jacobian.block<3, 3>(O_V, O_BG); }
+    Eigen::Vector3d getGravity() const { return g_world; } // Also needed
+
+    // Consider adding getters for corrected measurements if needed outside
+    // Eigen::Vector3d getCorrectedDeltaP(const Eigen::Vector3d& Bai, const Eigen::Vector3d& Bgi) const { ... }
+    // Eigen::Vector3d getCorrectedDeltaV(const Eigen::Vector3d& Bai, const Eigen::Vector3d& Bgi) const { ... }
+    // Eigen::Quaterniond getCorrectedDeltaQ(const Eigen::Vector3d& Bgi) const { ... }
+
+    // Also, consider making the results of evaluate (alpha, beta, gamma, corrected versions) accessible if needed elsewhere
+    Eigen::Vector3d getDeltaAlpha() const { return alpha; }
+    Eigen::Vector3d getDeltaBeta() const { return beta; }
+    Eigen::Quaterniond getDeltaGamma() const { return gamma; }
+
+    Eigen::Quaterniond getDeltaQ() const { return gamma; }
+
+    Eigen::Vector3d getBg() const { return bg; }
+
+    Eigen::Vector3d getBa() const { return ba; }
+
+    Eigen::MatrixXd getCovariance() const { return covariance; }
+
+    Eigen::MatrixXd getJacobian() const { return jacobian; }
+
+    double getAccNoiseSigma() const {
+        return acc_noise_sigma_;
+   }
+    double getGyroNoiseSigma() const {
+        return gyro_noise_sigma_;
+    }
+    double getAccBiasWalkSigma() const {
+        return acc_bias_walk_sigma_continuous_; 
+    }
+    double getGyroBiasWalkSigma() const {
+        return gyro_bias_walk_sigma_continuous_; // Assuming GYR_W stored as member
+    }
+
+private:
+
+    double sum_dt;
+
+    // basic data storage
+    std::vector<double> stamp_buf;
+    std::vector<Eigen::Vector3d> acc_buf;
+    std::vector<Eigen::Vector3d> gyro_buf;
+
+    // bias term
+    Eigen::Vector3d ba, bg;
+
+    // gravity vector
+    Eigen::Vector3d g_world;
+
+    // integration result
+    Eigen::Vector3d alpha; // delta_p
+    Eigen::Vector3d beta; // delta_v
+    Eigen::Quaterniond gamma; // delta_q
+
+    // temp variables for computed values in each integration step
+    Eigen::Vector3d alpha_new, beta_new;
+    Eigen::Quaterniond gamma_new;
+
+    Eigen::Matrix<double, 15, 15> jacobian, covariance;
+    Eigen::Matrix<double, 18, 18> noise;
+
+    double acc_noise_sigma_ = 0.0;
+    double gyro_noise_sigma_ = 0.0;
+    double acc_bias_walk_sigma_continuous_ = 0.0; // Store the continuous time random walk sigma
+    double gyro_bias_walk_sigma_continuous_ = 0.0;// Store the continuous time random walk sigma
+
+};
+
+class imu_factor : public ceres::SizedCostFunction<15, 7, 3, 6, 7, 3, 6>
+{
+public:
+    imu_factor() = delete;
+    imu_factor(imu_preint* preint_)
+    : preint(preint_) {}
+
+    imu_preint* preint;
+
+    virtual bool Evaluate(
+        double const* const* parameters,
+        double* residuals,
+        double** jacobians) const{
+
+            // parameters[0] -> [Pi(3), Qi(4)]
+            // parameters[1] -> [Vi(3)]
+            // parameters[2] -> [Bai(3), Bgi(3)]
+            // parameters[3] -> [Pj(3), Qj(4)]
+            // parameters[4] -> [Vj(3)]
+            // parameters[5] -> [Baj(3), Bgj(3)]
+
+            Eigen::Vector3d Pi(parameters[0][0], parameters[0][1], parameters[0][2]);
+            Eigen::Quaterniond Qi(parameters[0][6], parameters[0][3], parameters[0][4], parameters[0][5]);
+            Qi.normalize();
+
+            Eigen::Vector3d Vi(parameters[1][0], parameters[1][1], parameters[1][2]);
+            Eigen::Vector3d Bai(parameters[2][0], parameters[2][1], parameters[2][2]);
+            Eigen::Vector3d Bgi(parameters[2][3], parameters[2][4], parameters[2][5]);
+
+            Eigen::Vector3d Pj(parameters[3][0], parameters[3][1], parameters[3][2]);
+            Eigen::Quaterniond Qj(parameters[3][6], parameters[3][3], parameters[3][4], parameters[3][5]);
+            Qj.normalize();
+
+            Eigen::Vector3d Vj(parameters[4][0], parameters[4][1], parameters[4][2]);
+            Eigen::Vector3d Baj(parameters[5][0], parameters[5][1], parameters[5][2]);
+            Eigen::Vector3d Bgj(parameters[5][3], parameters[5][4], parameters[5][5]);
+
+            // print out the Positionss
+            ////("VI::" <<Vi);
+            //ROS_INFO_STREAM("VJ::" <<Vj);
+            // // print out the parameters to check the quaternion order
+            // ROS_INFO_STREAM("Parameteres from 3: " << parameters[0][3] << ", " << parameters[0][4] << ", " << parameters[0][5] << ", " << parameters[0][6]);
+            // ROS_INFO_STREAM("Constructed Qi in wxyz order: " << Qi.w() << ", " << Qi.x() << ", " << Qi.y() << ", " << Qi.z());
+
+            Eigen::Map<Eigen::Matrix<double, 15, 1>> residual(residuals);
+
+            residual = preint->evaluate(
+                Pi, Qi, Vi, Bai, Bgi,
+                Pj, Qj, Vj, Baj, Bgj
+            );
+
+            Eigen::Matrix<double, 15, 15> covariance = preint->getCovariance();
+
+            Eigen::Matrix<double, 15, 15> sqrt_info = Eigen::LLT<Eigen::Matrix<double, 15, 15>>(covariance.inverse()).matrixL().transpose();
+
+            residual = sqrt_info * residual;  
+    
+
+            if (jacobians) {
+                Eigen::Vector3d g = preint->getGravity();
+                double dt = preint->get_sum_dt(); 
+                // ROS_INFO("DT: %f", dt);
+                Eigen::MatrixXd J = preint->getJacobian(); 
+
+                Eigen::Matrix3d J_alpha_ba = preint->getJacobianDpDba(); // Use getter
+                Eigen::Matrix3d J_alpha_bg = preint->getJacobianDpDbg(); // Use getter
+                Eigen::Matrix3d J_beta_ba = preint->getJacobianDvDba();   // Use getter
+                Eigen::Matrix3d J_beta_bg = preint->getJacobianDvDbg();   // Use getter
+                Eigen::Matrix3d J_gamma_bg = preint->getJacobianDqDbg(); // Use getter
+
+                // check the magnitude or preintegration jacobian coefficients
+                if(J.maxCoeff() > 1e8 || J.minCoeff() < -1e8){
+                    ROS_WARN("Preintegration Jacobian coefficients are too large or too small, Preintegration unstable!!");
+                }
+    
+                // --- Jacobian w.r.t. parameters[0] (Pi, Qi) ---
+                if (jacobians[0]) {
+                    Eigen::Map<Eigen::Matrix<double, 15, 7, Eigen::RowMajor>> J0(jacobians[0]);
+                    J0.setZero();
+    
+                    // d(res)/d(Pi) - Position Part (Rows 0-2, Cols 0-2)
+                    J0.block<3, 3>(O_P, O_P) = -Qi.inverse().toRotationMatrix();
+                    J0.block<3, 3>(O_P, O_R) = Utility::skewSymmetric(Qi.inverse()*(0.5 * g * dt * dt + Pj - Pi - Vi * dt ));  //**** */
+                    #if 0
+                    J0.block<3, 3>(O_R, O_R) = -(Qi.inverse() * Qi).toRotationMatrix();
+                    #else
+                    Eigen::Quaterniond corrected_delta_q = preint->getDeltaQ() * Utility::deltaQ(J_gamma_bg * (Bgi - preint->getBg()));
+                    J0.block<3, 3>(O_R, O_R) = - (Utility::Qleft(Qj.inverse() * Qi) * Utility::Qright(corrected_delta_q)).bottomRightCorner<3, 3>();//**** */
+                    #endif
+                    J0.block<3, 3>(O_V, O_R) = Utility::skewSymmetric(Qi.inverse() * (g * dt + Vj - Vi)); // ******
+
+                    J0 = sqrt_info * J0;
+
+                }
+    
+                // --- Jacobian w.r.t. parameters[1] (Vi) ---
+                if (jacobians[1]) {
+                    Eigen::Map<Eigen::Matrix<double, 15, 3, Eigen::RowMajor>> J1(jacobians[1]);
+                    J1.setZero();
+                    J1.block<3, 3>(O_P, O_V - O_V) = -Qi.inverse().toRotationMatrix()*dt;
+                    J1.block<3, 3>(O_V, O_V - O_V) = -Qi.inverse().toRotationMatrix();
+
+                    J1 = sqrt_info * J1;
+
+                }
+    
+                // --- Jacobian w.r.t. parameters[2] (Bai, Bgi) ---
+                if (jacobians[2]) {
+                    Eigen::Map<Eigen::Matrix<double, 15, 6, Eigen::RowMajor>> J2(jacobians[2]);
+                    J2.setZero();
+
+                    J2.block<3, 3>(O_P, O_BA - O_BA) = -J_alpha_ba;
+                    J2.block<3 ,3>(O_P, O_BG - O_BA) = -J_alpha_bg;
+                    #if 0
+                    J2.block<3, 3>(O_R, O_BA - O_BA) = -J_gamma_bg;
+                    #else
+                    J2.block<3 ,3>(O_R, O_BG - O_BA) = -Utility::Qleft(Qj.inverse() * Qi * preint->getDeltaQ()).bottomRightCorner<3, 3>() * J_gamma_bg;
+                    #endif
+                    
+                    J2.block<3, 3>(O_V, O_BA - O_BA) = -J_beta_ba;
+                    J2.block<3, 3>(O_V, O_BG - O_BA) = -J_beta_bg;
+
+                    J2.block<3, 3>(O_BA, O_BA - O_BA) = - Eigen::Matrix3d::Identity();
+                    J2.block<3, 3>(O_BG, O_BG - O_BA) = - Eigen::Matrix3d::Identity();
+
+                    J2 = sqrt_info * J2;
+
+                }
+    
+                // --- Jacobian w.r.t. parameters[3] (Pj, Qj) ---
+                if (jacobians[3]) {
+                    Eigen::Map<Eigen::Matrix<double, 15, 7, Eigen::RowMajor>> J3(jacobians[3]);
+                    J3.setZero();
+
+                    J3.block<3, 3>(O_P, O_P) = Qi.inverse().toRotationMatrix();
+
+                    #if 0
+                    J3.block<3, 3>(O_R, O_R) = Eigen::Matrix3d::Identity();
+                    #else
+                    Eigen::Quaterniond corrected_delta_q = (preint->getDeltaQ() * Utility::deltaQ(J_gamma_bg * (Bgi - preint->getBg()))).normalized();
+                    J3.block<3, 3>(O_R, O_R) =  Utility::Qleft(corrected_delta_q.inverse() * Qi.inverse() * Qj).bottomRightCorner<3, 3>();  // ****
+                    #endif
+
+                    J3 = sqrt_info * J3;
+                
+                }
+    
+                // --- Jacobian w.r.t. parameters[4] (Vj) ---
+                if (jacobians[4]) {
+                    Eigen::Map<Eigen::Matrix<double, 15, 3, Eigen::RowMajor>> J4(jacobians[4]);
+                    J4.setZero();
+                    J4.block<3, 3>(O_V, O_V - O_V) = Qi.inverse().toRotationMatrix();
+                    J4 = sqrt_info * J4;
+                }
+    
+                // --- Jacobian w.r.t. parameters[5] (Baj, Bgj) ---
+                if (jacobians[5]) {
+                    Eigen::Map<Eigen::Matrix<double, 15, 6, Eigen::RowMajor>> J5(jacobians[5]);
+                    J5.setZero();
+                    J5.block<3, 3>(O_BA, O_BA - O_BA) = Eigen::Matrix3d::Identity(); 
+                    J5.block<3, 3>(O_BG, O_BG - O_BA) = Eigen::Matrix3d::Identity(); 
+
+                    J5 = sqrt_info * J5;
+                }
+            }
+            return true;
+        }
+
+};
 
 // Marginalization information class - handles Schur complement
 class MarginalizationInfo {
@@ -2471,160 +3651,160 @@ private:
     }
 
     // input msg: odometry (pose + velocity) in ECEF frame
-    void gpsCallback_odo(const nav_msgs::Odometry::ConstPtr &msg){
-        try{
-            std::lock_guard<std::mutex> lock(data_mutex_);
-            double unix_timestamp = msg->header.stamp.toSec();
+    // void gpsCallback_odo(const nav_msgs::Odometry::ConstPtr &msg){
+    //     try{
+    //         std::lock_guard<std::mutex> lock(data_mutex_);
+    //         double unix_timestamp = msg->header.stamp.toSec();
 
-            static bool first_conversion = true;
-            if(first_conversion){
-                ROS_INFO("First ros time conversion: ros=%.3f,  unix=%.3f",
-                    msg->header.stamp, unix_timestamp);
-                first_conversion = false;
-            }
+    //         static bool first_conversion = true;
+    //         if(first_conversion){
+    //             ROS_INFO("First ros time conversion: ros=%.3f,  unix=%.3f",
+    //                 msg->header.stamp, unix_timestamp);
+    //             first_conversion = false;
+    //         }
 
-            // get coordinates in ECEF frame
-            Eigen::Vector3d pose_ecef = Eigen::Vector3d(
-                msg->pose.pose.position.x,
-                msg->pose.pose.position.y,
-                msg->pose.pose.position.z);
+    //         // get coordinates in ECEF frame
+    //         Eigen::Vector3d pose_ecef = Eigen::Vector3d(
+    //             msg->pose.pose.position.x,
+    //             msg->pose.pose.position.y,
+    //             msg->pose.pose.position.z);
 
-            // get velocity in ECEF frame
-            Eigen::Vector3d vel_ecef = Eigen::Vector3d(
-                msg->twist.twist.linear.x,
-                msg->twist.twist.linear.y,
-                msg->twist.twist.linear.z);
+    //         // get velocity in ECEF frame
+    //         Eigen::Vector3d vel_ecef = Eigen::Vector3d(
+    //             msg->twist.twist.linear.x,
+    //             msg->twist.twist.linear.y,
+    //             msg->twist.twist.linear.z);
 
-            // set reference point if not set yet
-            // firstly convert to LLH format to fit the original code
-            Eigen::Vector3d pose_llh = m_GNSS_Tools.ecef2llh(pose_ecef);
+    //         // set reference point if not set yet
+    //         // firstly convert to LLH format to fit the original code
+    //         Eigen::Vector3d pose_llh = m_GNSS_Tools.ecef2llh(pose_ecef);
 
-            if (!has_gps_reference_) {
-                ref_longitude_ = pose_llh(0);
-                ref_latitude_ = pose_llh(1);
-                ref_altitude_ = pose_llh(2);
-                ENU_ref = pose_llh;
-                has_gps_reference_ = true;
-                ROS_INFO("Set GPS reference: lat=%.7f, lon=%.7f, alt=%.3f", 
-                        ref_latitude_, ref_longitude_, ref_altitude_);
-            }
+    //         if (!has_gps_reference_) {
+    //             ref_longitude_ = pose_llh(0);
+    //             ref_latitude_ = pose_llh(1);
+    //             ref_altitude_ = pose_llh(2);
+    //             ENU_ref = pose_llh;
+    //             has_gps_reference_ = true;
+    //             ROS_INFO("Set GPS reference: lat=%.7f, lon=%.7f, alt=%.3f", 
+    //                     ref_latitude_, ref_longitude_, ref_altitude_);
+    //         }
 
-            // convert to ENU frame pose and velocity
-            Eigen::Vector3d pose_enu = m_GNSS_Tools.ecef2enu(ENU_ref, pose_ecef);
-            Eigen::Vector3d vel_enu = m_GNSS_Tools.ecefVelocity2enu(ENU_ref, vel_ecef);
+    //         // convert to ENU frame pose and velocity
+    //         Eigen::Vector3d pose_enu = m_GNSS_Tools.ecef2enu(ENU_ref, pose_ecef);
+    //         Eigen::Vector3d vel_enu = m_GNSS_Tools.ecefVelocity2enu(ENU_ref, vel_ecef);
 
-            // DEBUG pose and velocity conversion
-            ROS_DEBUG("GPS pose converted: ECEF [%.2f, %.2f, %.2f] -> ENU [%.2f, %.2f, %.2f]",
-                    pose_ecef.x(), pose_ecef.y(), pose_ecef.z(),
-                    pose_enu.x(), pose_enu.y(), pose_enu.z());
-            ROS_DEBUG("GPS velocity converted: ECEF [%.2f, %.2f, %.2f] -> ENU [%.2f, %.2f, %.2f], magnitude: %.2f m/s (%.1f km/h)",
-                    vel_ecef.x(), vel_ecef.y(), vel_ecef.z(),
-                    vel_enu.x(), vel_enu.y(), vel_enu.z(),
-                    vel_enu.norm(), vel_enu.norm() * 3.6);
+    //         // DEBUG pose and velocity conversion
+    //         ROS_DEBUG("GPS pose converted: ECEF [%.2f, %.2f, %.2f] -> ENU [%.2f, %.2f, %.2f]",
+    //                 pose_ecef.x(), pose_ecef.y(), pose_ecef.z(),
+    //                 pose_enu.x(), pose_enu.y(), pose_enu.z());
+    //         ROS_DEBUG("GPS velocity converted: ECEF [%.2f, %.2f, %.2f] -> ENU [%.2f, %.2f, %.2f], magnitude: %.2f m/s (%.1f km/h)",
+    //                 vel_ecef.x(), vel_ecef.y(), vel_ecef.z(),
+    //                 vel_enu.x(), vel_enu.y(), vel_enu.z(),
+    //                 vel_enu.norm(), vel_enu.norm() * 3.6);
 
-            // add unit quaternion to fit the original code
-            Eigen::Quaterniond orientation = Eigen::Quaterniond::Identity();
+    //         // add unit quaternion to fit the original code
+    //         Eigen::Quaterniond orientation = Eigen::Quaterniond::Identity();
 
-            // create GPS measurement with timestamps from the bag
-            GpsMeasurement measurement;
-            measurement.position = pose_enu;
-            measurement.velocity = vel_enu;
-            measurement.orientation = orientation;
-            measurement.timestamp = unix_timestamp;  // use the bag's timestamp
+    //         // create GPS measurement with timestamps from the bag
+    //         GpsMeasurement measurement;
+    //         measurement.position = pose_enu;
+    //         measurement.velocity = vel_enu;
+    //         measurement.orientation = orientation;
+    //         measurement.timestamp = unix_timestamp;  // use the bag's timestamp
 
-            // add gps path for visualization
-            geometry_msgs::PoseStamped pose_stamped;
-            pose_stamped.header.stamp = ros::Time(unix_timestamp);
-            pose_stamped.header.frame_id = world_frame_id_;
-            pose_stamped.pose.position.x = pose_enu.x();
-            pose_stamped.pose.position.y = pose_enu.y();
-            pose_stamped.pose.position.z = pose_enu.z();
-            pose_stamped.pose.orientation.w = orientation.w();
-            pose_stamped.pose.orientation.x = orientation.x();
-            pose_stamped.pose.orientation.y = orientation.y();
-            pose_stamped.pose.orientation.z = orientation.z();
+    //         // add gps path for visualization
+    //         geometry_msgs::PoseStamped pose_stamped;
+    //         pose_stamped.header.stamp = ros::Time(unix_timestamp);
+    //         pose_stamped.header.frame_id = world_frame_id_;
+    //         pose_stamped.pose.position.x = pose_enu.x();
+    //         pose_stamped.pose.position.y = pose_enu.y();
+    //         pose_stamped.pose.position.z = pose_enu.z();
+    //         pose_stamped.pose.orientation.w = orientation.w();
+    //         pose_stamped.pose.orientation.x = orientation.x();
+    //         pose_stamped.pose.orientation.y = orientation.y();
+    //         pose_stamped.pose.orientation.z = orientation.z();
 
-            gps_path_msg_.header.stamp = ros::Time(unix_timestamp);
-            gps_path_msg_.poses.push_back(pose_stamped);
+    //         gps_path_msg_.header.stamp = ros::Time(unix_timestamp);
+    //         gps_path_msg_.poses.push_back(pose_stamped);
 
-            // publish gps path
-            gps_path_pub_.publish(gps_path_msg_);
+    //         // publish gps path
+    //         gps_path_pub_.publish(gps_path_msg_);
 
-            // add to gps measurements
-            gps_measurements_.push_back(measurement);
+    //         // add to gps measurements
+    //         gps_measurements_.push_back(measurement);
 
-            // Initialize if not initialized and using GPS
-            if (!is_initialized_ && use_gps_instead_of_uwb_) {
-                // Wait for some IMU data before initializing
-                if (imu_buffer_.size() >= 5) {
-                    ROS_INFO("Initializing system with GPS measurement at timestamp: %.3f", unix_timestamp);
-                    initializeFromGps(measurement);
-                    is_initialized_ = true;
-                } else {
-                    ROS_INFO_THROTTLE(1.0, "Waiting for IMU data before GPS initialization...");
-                }
-                return;
-            }
+    //         // Initialize if not initialized and using GPS
+    //         if (!is_initialized_ && use_gps_instead_of_uwb_) {
+    //             // Wait for some IMU data before initializing
+    //             if (imu_buffer_.size() >= 5) {
+    //                 ROS_INFO("Initializing system with GPS measurement at timestamp: %.3f", unix_timestamp);
+    //                 initializeFromGps(measurement);
+    //                 is_initialized_ = true;
+    //             } else {
+    //                 ROS_INFO_THROTTLE(1.0, "Waiting for IMU data before GPS initialization...");
+    //             }
+    //             return;
+    //         }
 
-            // Create a new keyframe at each GPS measurement
-            if (is_initialized_ && has_imu_data_ && use_gps_instead_of_uwb_) {
+    //         // Create a new keyframe at each GPS measurement
+    //         if (is_initialized_ && has_imu_data_ && use_gps_instead_of_uwb_) {
                 
-                // check if we have IMU data covering this GPS timestamp
-                bool has_surrounding_imu_data = false;
-                double closest_imu_time = 0;
-                double closest_time_diff = std::numeric_limits<double>::max(); // set as the maximum first
+    //             // check if we have IMU data covering this GPS timestamp
+    //             bool has_surrounding_imu_data = false;
+    //             double closest_imu_time = 0;
+    //             double closest_time_diff = std::numeric_limits<double>::max(); // set as the maximum first
 
-                for (const auto& imu : imu_buffer_) {
-                    double imu_time = imu.header.stamp.toSec();
-                    double time_diff = std::abs(imu_time - unix_timestamp);
+    //             for (const auto& imu : imu_buffer_) {
+    //                 double imu_time = imu.header.stamp.toSec();
+    //                 double time_diff = std::abs(imu_time - unix_timestamp);
 
-                    if (time_diff < closest_time_diff) {
-                        closest_time_diff = time_diff;
-                        closest_imu_time = imu_time;
-                    }
+    //                 if (time_diff < closest_time_diff) {
+    //                     closest_time_diff = time_diff;
+    //                     closest_imu_time = imu_time;
+    //                 }
 
-                    // consider IMU data within 50ms of the GPS timestamp
-                    if (time_diff < 0.05) {
-                        has_surrounding_imu_data = true;
-                        break;
-                    }
-                }
+    //                 // consider IMU data within 50ms of the GPS timestamp
+    //                 if (time_diff < 0.05) {
+    //                     has_surrounding_imu_data = true;
+    //                     break;
+    //                 }
+    //             }
 
-                if (!has_surrounding_imu_data) {
-                    if(!imu_buffer_.empty()){
-                        ROS_WARN("GPS-IMU time mismatch: GPS=%.3f, closest IMU=%.3f (diff=%.3f sec), buffer range [%.3f to %.3f]", 
-                            unix_timestamp, closest_imu_time, closest_time_diff,
-                            imu_buffer_.front().header.stamp.toSec(), 
-                            imu_buffer_.back().header.stamp.toSec());
+    //             if (!has_surrounding_imu_data) {
+    //                 if(!imu_buffer_.empty()){
+    //                     ROS_WARN("GPS-IMU time mismatch: GPS=%.3f, closest IMU=%.3f (diff=%.3f sec), buffer range [%.3f to %.3f]", 
+    //                         unix_timestamp, closest_imu_time, closest_time_diff,
+    //                         imu_buffer_.front().header.stamp.toSec(), 
+    //                         imu_buffer_.back().header.stamp.toSec());
 
-                        // If the time difference is small enough, still create a keyframe
-                        if (closest_time_diff < 0.2) {  // Accept up to 200ms difference
-                            has_surrounding_imu_data = true;
-                            ROS_INFO("Using nearby IMU data (%.3f sec offset) for keyframe", closest_time_diff);
+    //                     // If the time difference is small enough, still create a keyframe
+    //                     if (closest_time_diff < 0.2) {  // Accept up to 200ms difference
+    //                         has_surrounding_imu_data = true;
+    //                         ROS_INFO("Using nearby IMU data (%.3f sec offset) for keyframe", closest_time_diff);
                             
-                            // Fix: Keep the GPS timestamp but know we have nearby IMU data
-                        }
-                    }
-                }
+    //                         // Fix: Keep the GPS timestamp but know we have nearby IMU data
+    //                     }
+    //                 }
+    //             }
 
-                if (has_surrounding_imu_data) {
-                    // Create keyframe from GPS
-                    createKeyframeFromGps(measurement);
-                    ROS_INFO("Created GPS keyframe at timestamp %.3f", measurement.timestamp);
-                } else {
-                    ROS_WARN("Skipping GPS keyframe at %.3f - no surrounding IMU data", unix_timestamp);
-                }
-            }
+    //             if (has_surrounding_imu_data) {
+    //                 // Create keyframe from GPS
+    //                 createKeyframeFromGps(measurement);
+    //                 ROS_INFO("Created GPS keyframe at timestamp %.3f", measurement.timestamp);
+    //             } else {
+    //                 ROS_WARN("Skipping GPS keyframe at %.3f - no surrounding IMU data", unix_timestamp);
+    //             }
+    //         }
             
-            // Call this function at the end of gpsCallback after adding a few measurements:
-            if (gps_measurements_.size() == 5) {
-                testGpsVelocityCalculation();
-            }
+    //         // Call this function at the end of gpsCallback after adding a few measurements:
+    //         if (gps_measurements_.size() == 5) {
+    //             testGpsVelocityCalculation();
+    //         }
 
-        }catch (const std::exception& e) {
-            ROS_ERROR("Exception in gpsCallback_odometry: %s", e.what());
-        }
-    }
+    //     }catch (const std::exception& e) {
+    //         ROS_ERROR("Exception in gpsCallback_odometry: %s", e.what());
+    //     }
+    // }
 
     // original GPS callback function
     void gpsCallback(const novatel_msgs::INSPVAX::ConstPtr& msg) {
