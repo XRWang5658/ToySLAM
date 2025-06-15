@@ -15,6 +15,7 @@
 #include <limits>
 #include <chrono>
 #include <novatel_msgs/INSPVAX.h>  // Added INSPVAX message header
+#include <gnss_comm/GnssPVTSolnMsg.h>  // Added GNSS PVT solution message header
 
 // Added for visualization
 #include <nav_msgs/Path.h>
@@ -34,6 +35,7 @@ GNSS_Tools m_GNSS_Tools;
 // added for logging result from ceres, and other information inlcuding computation load
 #include "../include/ceres_logger.h"
 #include "../include/utility.h"
+
 
 /**
  * @brief Converts velocity from RFU (Right-Forward-Up) coordinate system to ENU (East-North-Up) coordinate system.
@@ -1570,7 +1572,7 @@ public:
         
         if (use_gps_instead_of_uwb_) {
             // gps_sub_ = nh.subscribe(gps_topic_, gps_queue_size_, &UwbImuFusion::gpsCallback_odo, this);
-            gps_sub_ = nh.subscribe(gps_topic_, gps_queue_size_, &UwbImuFusion::gpsCallback, this);
+            gps_sub_ = nh.subscribe(gps_topic_, gps_queue_size_, &UwbImuFusion::gpsCallback_gnsscomm, this);
             gt_sub_ = nh.subscribe(gt_topic_, gt_queue_size_, &UwbImuFusion::groundTruthCallback, this);
             ROS_INFO("Using GPS+IMU fusion mode");
             ROS_INFO("Subscribing to GPS topic: %s (queue: %d)", gps_topic_.c_str(), gps_queue_size_);
@@ -2828,6 +2830,169 @@ private:
         }
     }
 
+    /**
+     * @brief GPS callback function, updated for the PVTSolution and gtime_t structures.
+     * @param msg A ROS message containing GNSS data, whose fields should match the PVTSolution struct.
+     */
+    void gpsCallback_gnsscomm(const gnss_comm::GnssPVTSolnMsg::ConstPtr & msg)
+    {
+        try {
+            // --- PRE-CONDITION CHECK ---
+            // It's good practice to check if the GNSS fix is valid before processing.
+            if (!msg->valid_fix || msg->fix_type < 2) { // 2 = 2D-fix, 3 = 3D-fix
+                ROS_WARN_THROTTLE(5.0, "Skipping GPS message due to invalid or no fix. Fix type: %u", msg->fix_type);
+                return;
+            }
+
+            std::lock_guard<std::mutex> lock(data_mutex_);
+
+            // --- TIMESTAMP CONVERSION ---
+            // NOTE: Assumes your GnssTimeMsg 'time' contains 'gps_week' and 'gps_tow' (time of week in seconds).
+            // You may need to adjust this based on the actual structure of GnssTimeMsg.
+            // For example, if time_of_week is in milliseconds, use 'msg->time.gps_tow / 1000.0'.
+            double unix_timestamp = gpsToUnixTime(msg->time.week, msg->time.tow);
+
+            // Debug output to verify conversion
+            static bool first_conversion = true;
+            if (first_conversion) {
+                ROS_INFO("First GPS time conversion: week=%u, tow=%.3f → unix=%.3f",
+                        msg->time.week, msg->time.tow, unix_timestamp);
+                first_conversion = false;
+            }
+
+            // --- REFERENCE POINT ---
+            // Set reference point if not set yet
+            if (!has_gps_reference_) {
+                ref_latitude_ = msg->latitude;
+                ref_longitude_ = msg->longitude;
+                ref_altitude_ = msg->altitude;
+                has_gps_reference_ = true;
+                ROS_INFO("Set GPS reference: lat=%.7f, lon=%.7f, alt=%.3f",
+                        ref_latitude_, ref_longitude_, ref_altitude_);
+            }
+
+            // Convert GPS to ENU with safety checks
+            Eigen::Vector3d enu_position = convertGpsToEnu(msg->latitude, msg->longitude, msg->altitude);
+
+            // --- ARTIFICIAL NOISE (No change needed) ---
+            if (abs(artificial_gps_noise_) > 1e-3) {
+                static int msg_counter = 0;
+                if (msg_counter % 1 == 0) {
+                    double noise_x = ((double)rand() / RAND_MAX * 2.0 - 1.0) * artificial_gps_noise_;
+                    double noise_y = ((double)rand() / RAND_MAX * 2.0 - 1.0) * artificial_gps_noise_;
+                    double noise_z = ((double)rand() / RAND_MAX * 2.0 - 1.0) * artificial_gps_noise_ * 0.5;
+                    enu_position.x() += noise_x;
+                    enu_position.y() += noise_y;
+                    enu_position.z() += noise_z;
+                }
+                msg_counter++;
+            }
+
+            // --- VELOCITY CONVERSION (NED to ENU) ---
+            // The new message provides velocity in NED (North-East-Down) frame.
+            // Convert NED velocity to ENU (East-North-Up) frame.
+            Eigen::Vector3d enu_velocity(
+                msg->vel_e,       // East  -> X
+                msg->vel_n,       // North -> Y
+                -msg->vel_d       // Down  -> -Z (Up)
+            );
+
+            // --- ORIENTATION (CRITICAL CHANGE) ---
+            // The 'gnss_comm' message does NOT provide roll, pitch, or yaw information.
+            // Therefore, a valid orientation cannot be computed from this message alone.
+            // You must get orientation from another sensor (e.g., IMU).
+            // Here, we set it to an identity quaternion as a placeholder.
+            Eigen::Quaterniond orientation = Eigen::Quaterniond::Identity();
+            
+            // Log a warning that orientation is not available from this topic.
+            ROS_WARN_ONCE("Orientation data is not available in gnss_comm message. Using identity quaternion. "
+                        "For valid orientation, fuse with an IMU.");
+
+
+            // Create GPS measurement with timestamps from the bag
+            GpsMeasurement measurement;
+            measurement.position = enu_position;
+            measurement.velocity = enu_velocity;
+            measurement.orientation = orientation; // This is now an identity quaternion
+            measurement.timestamp = unix_timestamp;
+
+            // --- VISUALIZATION (No change needed) ---
+            // Add to GPS path for visualization
+            geometry_msgs::PoseStamped pose_stamped;
+            pose_stamped.header.stamp = ros::Time(unix_timestamp);
+            pose_stamped.header.frame_id = world_frame_id_;
+            pose_stamped.pose.position.x = enu_position.x();
+            pose_stamped.pose.position.y = enu_position.y();
+            pose_stamped.pose.position.z = enu_position.z();
+            pose_stamped.pose.orientation.w = orientation.w();
+            pose_stamped.pose.orientation.x = orientation.x();
+            pose_stamped.pose.orientation.y = orientation.y();
+            pose_stamped.pose.orientation.z = orientation.z();
+
+            gps_path_msg_.header.stamp = ros::Time(unix_timestamp);
+            gps_path_msg_.poses.push_back(pose_stamped);
+            gps_path_pub_.publish(gps_path_msg_);
+
+            // Add to GPS measurements
+            gps_measurements_.push_back(measurement);
+
+            // --- INITIALIZATION & KEYFRAME LOGIC ---
+            // The rest of the logic can remain the same.
+            // However, be aware that when 'initializeFromGps' or 'createKeyframeFromGps'
+            // is called, the 'measurement' will contain an invalid (identity) orientation.
+            // Your downstream fusion logic must account for this.
+
+            if (!is_initialized_ && use_gps_instead_of_uwb_) {
+                if (imu_buffer_.size() >= 5) {
+                    ROS_INFO("Initializing system with GPS measurement at timestamp: %.3f", unix_timestamp);
+                    initializeFromGps(measurement);
+                    is_initialized_ = true;
+                } else {
+                    ROS_INFO_THROTTLE(1.0, "Waiting for IMU data before GPS initialization...");
+                }
+                return;
+            }
+
+            if (is_initialized_ && has_imu_data_ && use_gps_instead_of_uwb_) {
+                bool has_surrounding_imu_data = false;
+                double closest_imu_time = 0;
+                double closest_time_diff = std::numeric_limits<double>::max();
+
+                for (const auto& imu : imu_buffer_) {
+                    double imu_time = imu.header.stamp.toSec();
+                    double time_diff = std::abs(imu_time - unix_timestamp);
+                    if (time_diff < closest_time_diff) {
+                        closest_time_diff = time_diff;
+                        closest_imu_time = imu_time;
+                    }
+                    if (time_diff < 0.05) {
+                        has_surrounding_imu_data = true;
+                        break;
+                    }
+                }
+
+                if (!has_surrounding_imu_data && !imu_buffer_.empty() && closest_time_diff < 0.2) {
+                    has_surrounding_imu_data = true;
+                    ROS_INFO("Using nearby IMU data (%.3f sec offset) for keyframe", closest_time_diff);
+                }
+
+                if (has_surrounding_imu_data) {
+                    createKeyframeFromGps(measurement);
+                    ROS_INFO("Created GPS keyframe at timestamp %.3f", measurement.timestamp);
+                } else {
+                    ROS_WARN("Skipping GPS keyframe at %.3f - no surrounding IMU data", unix_timestamp);
+                }
+            }
+
+            // Call test function
+            if (gps_measurements_.size() == 5) {
+                testGpsVelocityCalculation();
+            }
+
+        } catch (const std::exception& e) {
+            ROS_ERROR("Exception in gpsCallback: %s", e.what());
+        }
+    }
 
     void groundTruthCallback(const novatel_msgs::INSPVAX::ConstPtr& msg) {
         // 1. 时间戳转换

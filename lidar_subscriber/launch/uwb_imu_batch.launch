@@ -1,10 +1,10 @@
 <launch>
 
-     <arg name="results_log_path" default="$(find toyslam)/../../../data/results.txt" 
+     <arg name="results_log_path" default="$(find toyslam)/../data/results.txt" 
          doc="Path for the optimization results log file (parameters). Empty generates default name." />
-     <arg name="metrics_log_path" default="$(find toyslam)/../../../data/metrics.txt" 
+     <arg name="metrics_log_path" default="$(find toyslam)/../data/metrics.txt" 
          doc="Path for the optimization metrics log file (summary/computation). Empty generates default name." />
-     <arg name="bias_log_path" default="$(find toyslam)/../../../data/bias.txt" 
+     <arg name="bias_log_path" default="$(find toyslam)/../data/bias.txt" 
          doc="Path for the optimization bias log file (summary/computation). Empty generates default name." />
      <!--$(find toyslam)/../../../data/bias.txt Yixin's bias.txt address-->
 
@@ -41,13 +41,13 @@
 
     <!-- ============================== TOPIC NAMES ============================== -->
     <!-- ROS topics where sensor data is published -->
-    <arg name="imu_topic" default="/imu/data" 
+    <arg name="imu_topic" default="/mavros/imu/data_raw" 
          doc="Topic for IMU measurements (orientation, angular velocity, linear acceleration)" />
     <!-- <arg name="gps_topic" default="/gnss_preprocessor_node/ECEFFloatRTK" 
          doc="Topic for GPS/INS measurements (position, velocity, orientation)" /> -->
      <!-- <arg name="gps_topic" default="/gnss_preprocessor_node/odometryECEF" 
           doc="Topic for GPS/INS measurements (position, velocity, orientation)" /> -->
-     <arg name="gps_topic" default="/novatel_data/inspvax" 
+     <arg name="gps_topic" default="/ublox_driver/receiver_pvt" 
          doc="Topic for GPS/INS measurements (position, velocity, orientation)" />
     <arg name="uwb_topic" default="/sensor_simulator/UWBPoistionPS" 
          doc="Topic for UWB position measurements (position only)" />
@@ -63,19 +63,19 @@
     <!-- These values model the uncertainty in sensor measurements -->
     
     <!-- IMU noise parameters - affect integration accuracy and bias estimation -->
-    <arg name="imu_acc_noise" default="0.01" 
+    <arg name="imu_acc_noise" default="0.1" 
          doc="Accelerometer white noise (m/s²). Higher values trust accelerometer less." />
-    <arg name="imu_gyro_noise" default="0.01" 
+    <arg name="imu_gyro_noise" default="0.1" 
          doc="Gyroscope white noise (rad/s). Higher values trust gyroscope less." />
-    <arg name="imu_acc_bias_noise" default="0.0001"
+    <arg name="imu_acc_bias_noise" default="0.01"
          doc="Accelerometer bias noise (m/s²). Higher values allow more IMU influence." />
-    <arg name="imu_gyro_bias_noise" default="0.0001"
+    <arg name="imu_gyro_bias_noise" default="0.01"
          doc="Gyroscope bias noise (rad/s). Higher values allow more IMU influence." />
     
     <!-- GPS noise parameters - affect how tightly estimates adhere to GPS -->
     <arg name="gps_position_noise" default="5" 
          doc="GPS position measurement noise (m). Higher values allow more IMU influence." />
-    <arg name="gps_velocity_noise" default="0.1" 
+    <arg name="gps_velocity_noise" default="5" 
          doc="GPS velocity measurement noise (m/s). Higher values allow more IMU influence." />
     <arg name="gps_orientation_noise" default="0.1" 
          doc="GPS orientation measurement noise (rad). Higher values trust GPS orientation less." />
