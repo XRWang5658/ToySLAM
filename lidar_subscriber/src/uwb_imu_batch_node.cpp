@@ -38,62 +38,6 @@ GNSS_Tools m_GNSS_Tools;
 #include "../include/gnss_parser.h"
 
 
-/**
- * @brief Converts velocity from RFU (Right-Forward-Up) coordinate system to ENU (East-North-Up) coordinate system.
- *
- * @param v_rfu_eigen Velocity vector in RFU coordinate system (X: Right, Y: Forward, Z: Up).
- * @param roll_deg Roll angle (rotation around the body's Forward axis), unit: degrees.
- * @param pitch_deg Pitch angle (rotation around the body's Right axis), unit: degrees.
- * @param yaw_deg_from_north_clockwise Yaw angle (clockwise positive from North, rotation around NED's Down axis), unit: degrees.
- * @return Eigen::Vector3d Velocity vector in ENU coordinate system (X: East, Y: North, Z: Up).
- */
-Eigen::Vector3d convertRfuToEnu(const Eigen::Vector3d& v_rfu_eigen,
-                                double roll_deg,
-                                double pitch_deg,
-                                double yaw_deg_from_north_clockwise) {
-    // 1. Convert angles from degrees to radians
-    double roll_rad = roll_deg * M_PI / 180.0;
-    double pitch_rad = pitch_deg * M_PI / 180.0;
-    double yaw_ned_rad = yaw_deg_from_north_clockwise * M_PI / 180.0;
-
-    // 2. RFU velocity components (v_rfu_eigen: X=Right, Y=Forward, Z=Up)
-    //    v_rfu_eigen(0) -> right
-    //    v_rfu_eigen(1) -> forward
-    //    v_rfu_eigen(2) -> up
-
-    // 3. Define transformation from RFU to standard aeronautical body coordinate system FRD (X: Forward, Y: Right, Z: Down)
-    Eigen::Vector3d v_frd;
-    v_frd(0) = v_rfu_eigen(1);  // Forward component of FRD is Forward component of RFU
-    v_frd(1) = v_rfu_eigen(0);  // Right component of FRD is Right component of RFU
-    v_frd(2) = -v_rfu_eigen(2); // Down component of FRD is negative Up component of RFU
-
-    // 4. Construct rotation matrix from FRD (body) to NED (North-East-Down)
-    //    Euler angle order: ZYX (Yaw, Pitch, Roll) applied intrinsically
-    //    Yaw: Rotation around Z_ned (Down) axis.
-    //    Pitch: Rotation around intermediate Y_axis (body's Right axis).
-    //    Roll: Rotation around final X_axis (body's Forward axis).
-
-    Eigen::AngleAxisd rollAngle(roll_rad, Eigen::Vector3d::UnitX());    // Rotation around body X-axis (Forward)
-    Eigen::AngleAxisd pitchAngle(pitch_rad, Eigen::Vector3d::UnitY());  // Rotation around body Y-axis (Right)
-    Eigen::AngleAxisd yawAngle(yaw_ned_rad, Eigen::Vector3d::UnitZ());  // Rotation around NED Z-axis (Down)
-
-    // Rotation matrix R_frd_to_ned = Rz(yaw) * Ry(pitch) * Rx(roll)
-    // This order means applying roll to the FRD system, then pitch to the rotated system, and finally yaw.
-    Eigen::Quaterniond combined_rotation_quat = yawAngle * pitchAngle * rollAngle;
-    Eigen::Matrix3d R_frd_to_ned = combined_rotation_quat.toRotationMatrix();
-
-    // 5. Convert FRD velocity to NED velocity
-    Eigen::Vector3d v_ned = R_frd_to_ned * v_frd;
-
-    // 6. Convert from NED (X:North, Y:East, Z:Down) to ENU (X:East, Y:North, Z:Up)
-    Eigen::Vector3d v_enu;
-    v_enu(0) = v_ned(1); // ENU East  = NED East component
-    v_enu(1) = v_ned(0); // ENU North = NED North component
-    v_enu(2) = -v_ned(2);// ENU Up    = -NED Down component
-
-    return v_enu;
-}
-
 // Custom parameterization for pose (position + quaternion)
 class PoseParameterization : public ceres::LocalParameterization {
 public:
@@ -2547,11 +2491,18 @@ private:
                 // If GPS orientation is not used, we can still use the IMU orientation as a fallback.
                 sensor_msgs::Imu closest_imu = findClosestImuMeasurement(gps.timestamp);
                 if (closest_imu.header.stamp.toSec() > 0 && closest_imu.orientation_covariance[0] != -1) {
+                    // check the IMU orientation is valid
+                    // and use it to update the propagated state orientation
+                    if (propagated_state.orientation.coeffs().norm() < 1e-4) {
+                        ROS_WARN("IMU orientation is zero, using identity quaternion instead.");
+                        propagated_state.orientation = state_window_.back().orientation;
+                    }
                     propagated_state.orientation = Eigen::Quaterniond(
                         closest_imu.orientation.w, closest_imu.orientation.x, 
                         closest_imu.orientation.y, closest_imu.orientation.z).normalized();
-                } else {
-                    propagated_state.orientation = state_window_.back().orientation; // Fallback to last state orientation
+                }
+                else{
+                    propagated_state.orientation = state_window_.back().orientation;
                 }
             }
             if (use_gps_velocity_ && gps.velocity_valid) {
