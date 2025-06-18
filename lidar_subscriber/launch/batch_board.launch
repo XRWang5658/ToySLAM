@@ -4,11 +4,11 @@
     <arg name="use_gps" default="true" />
 
 
-    <arg name="imu_topic" default="/imu/data" />
-    <arg name="gps_topic" default="/novatel_data/inspvax" />
+    <arg name="imu_topic" default="/mavros/imu/data_raw" />
+    <arg name="gps_topic" default="/ublox_driver/receiver_pvt" />
     <arg name="uwb_topic" default="/sensor_simulator/UWBPoistionPS" />
     
-    <arg name="gps_message_type" default="inspvax" />
+    <arg name="gps_message_type" default="gnss_comm" />
 
 
     <arg name="world_frame_id" default="map" doc="世界参考坐标系" />
@@ -23,11 +23,11 @@
     <arg name="max_iterations" default="50" doc="Ceres求解器的最大迭代次数" />
 
 
-    <arg name="imu_acc_noise" default="0.01" doc="加速度计白噪声 (m/s^2)" />
-    <arg name="imu_gyro_noise" default="0.01" doc="陀螺仪白噪声 (rad/s)" />
+    <arg name="imu_acc_noise" default="0.015" doc="加速度计白噪声 (m/s^2)" />
+    <arg name="imu_gyro_noise" default="0.12" doc="陀螺仪白噪声 (rad/s)" />
     
-    <arg name="imu_acc_bias_noise" default="0.0001" doc="加速度计偏置随机游走噪声" />
-    <arg name="imu_gyro_bias_noise" default="0.0001" doc="陀螺仪偏置随机游走噪声" />
+    <arg name="imu_acc_bias_noise" default="0.0007" doc="加速度计偏置随机游走噪声" />
+    <arg name="imu_gyro_bias_noise" default="0.0017" doc="陀螺仪偏置随机游走噪声" />
     
     <arg name="initial_acc_bias_x" default="0.0" />
     <arg name="initial_acc_bias_y" default="0.0" />
@@ -44,8 +44,8 @@
     <arg name="use_gps_orientation_as_initial" default="false" doc="是否使用GPS姿态作为新关键帧的初始值" />
     <arg name="enable_velocity_constraint" default="false" doc="是否将GPS速度作为优化约束" />
     
-    <arg name="gps_position_noise" default="0.1" doc="默认GPS位置噪声 (m)" />
-    <arg name="gps_velocity_noise" default="0.1" doc="默认GPS速度噪声 (m/s)" />
+    <arg name="gps_position_noise" default="5.0" doc="默认GPS位置噪声 (m)" />
+    <arg name="gps_velocity_noise" default="5.0" doc="默认GPS速度噪声 (m/s)" />
     <arg name="uwb_position_noise" default="0.1" doc="UWB位置噪声 (m)" />
 
 
@@ -65,7 +65,7 @@
     <arg name="results_log_path" default="$(find toyslam)/../data/results.txt" />
     <arg name="metrics_log_path" default="$(find toyslam)/../data/metrics.txt" />
     <arg name="bias_log_path" default="$(find toyslam)/../data/bias.txt" />
-    <arg name="artificial_gps_noise" default="0.01" doc="为模拟GPS注入的人工噪声 (m)" />
+    <arg name="artificial_gps_noise" default="0" doc="为模拟GPS注入的人工噪声 (m)" />
 
 
     <node if="$(arg rviz)" name="rviz" pkg="rviz" type="rviz" args="-d $(find toyslam)/rviz/gps_trajectory.rviz" />
