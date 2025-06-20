@@ -98,9 +98,10 @@ public:
         meas.position = convertGpsToEnu(msg->latitude, msg->longitude, msg->altitude);
         meas.position_valid = true;
         // 注意：这里的精度字段名可能需要您根据自己的 .msg 文件定义来修改
-        // meas.position_std_dev << msg->h_accuracy, msg->h_accuracy, msg->v_accuracy;
+        meas.position_std_dev << msg->h_acc, msg->h_acc, msg->v_acc;
 
         meas.velocity = Eigen::Vector3d(msg->vel_e, msg->vel_n, -msg->vel_d);
+        meas.velocity_std_dev << msg->vel_acc, msg->vel_acc, msg->vel_acc;
         meas.velocity_valid = true;
         meas.orientation_valid = false;
         return meas;

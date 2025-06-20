@@ -4,7 +4,7 @@
     <arg name="use_gps" default="true" />
 
 
-    <arg name="imu_topic" default="/mavros/imu/data_raw" />
+    <arg name="imu_topic" default="/imu_gnss_driver/imu1/data" />
     <arg name="gps_topic" default="/ublox_driver/receiver_pvt" />
     <arg name="uwb_topic" default="/sensor_simulator/UWBPoistionPS" />
     

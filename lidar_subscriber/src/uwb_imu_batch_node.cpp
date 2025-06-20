@@ -1247,7 +1247,7 @@ public:
         private_nh.param<double>("gps_velocity_noise", gps_velocity_noise_, 0.01);
         
         // GPS data usage configuration
-        private_nh.param<bool>("use_gps_orientation_as_initial", use_gps_orientation_as_initial_, true);
+        private_nh.param<bool>("use_gps_orientation_as_initial", use_gps_orientation_as_initial_, false);
         private_nh.param<bool>("use_gps_velocity", use_gps_velocity_, true);
 
         
@@ -1297,12 +1297,12 @@ public:
         private_nh.param<bool>("enable_marginalization", enable_marginalization_, true);
         
         // NEW: Add feature configuration parameters
-        private_nh.param<bool>("enable_roll_pitch_constraint", enable_roll_pitch_constraint_, true);
+        private_nh.param<bool>("enable_roll_pitch_constraint", enable_roll_pitch_constraint_, false);
 
-        private_nh.param<bool>("enable_orientation_smoothness_factor", enable_orientation_smoothness_factor_, true);
-        private_nh.param<bool>("enable_velocity_constraint", enable_velocity_constraint_, true);
-        private_nh.param<bool>("enable_horizontal_velocity_incentive", enable_horizontal_velocity_incentive_, true);
-        private_nh.param<bool>("enable_imu_orientation_factor", enable_imu_orientation_factor_, true);
+        private_nh.param<bool>("enable_orientation_smoothness_factor", enable_orientation_smoothness_factor_, false);
+        private_nh.param<bool>("enable_velocity_constraint", enable_velocity_constraint_, false);
+        private_nh.param<bool>("enable_horizontal_velocity_incentive", enable_horizontal_velocity_incentive_, false);
+        private_nh.param<bool>("enable_imu_orientation_factor", enable_imu_orientation_factor_, false);
         
         // Constraint weights
         private_nh.param<double>("roll_pitch_weight", roll_pitch_weight_, 300.0); // Increased from 100.0
@@ -1544,7 +1544,7 @@ private:
     
     // GPS data usage configuration
     bool use_gps_orientation_as_initial_;
-    bool use_gps_orientation_as_constraint_;
+    bool use_gps_orientation_as_constraint_ = false;
     bool use_gps_velocity_;
     
     // GPS-related members
@@ -2296,7 +2296,7 @@ private:
                 double closest_time_diff = std::numeric_limits<double>::max();
                 for (const auto& imu : imu_buffer_) {
                     double time_diff = std::abs(imu.header.stamp.toSec() - measurement.timestamp);
-                    if (time_diff < 0.05) { // 50ms tolerance
+                    if (time_diff < 0.2) { // 50ms tolerance
                         has_surrounding_imu_data = true;
                         break;
                     }
@@ -2421,6 +2421,7 @@ private:
                     current_state_.orientation = Eigen::Quaterniond::Identity();
                     ROS_INFO("Initializer: Orientation set to Identity as a fallback.");
                 }
+                current_state_.orientation = Eigen::Quaterniond::Identity();
             }
 
             // --- Initialize Velocity ---
@@ -2494,7 +2495,7 @@ private:
                     // check the IMU orientation is valid
                     // and use it to update the propagated state orientation
                     if (propagated_state.orientation.coeffs().norm() < 1e-4) {
-                        ROS_WARN("IMU orientation is zero, using identity quaternion instead.");
+                        ROS_WARN("IMU orientation is zero, using last quaternion instead.");
                         propagated_state.orientation = state_window_.back().orientation;
                     }
                     propagated_state.orientation = Eigen::Quaterniond(
@@ -2918,7 +2919,7 @@ private:
             std::lock_guard<std::mutex> lock(data_mutex_);
             // add IMU measurement to the preintegration map
             // extract the data first, including the stamp in seconds, the acceleration, and the angular velocity
-            double unix_timestamp = msg->header.stamp.toSec();
+            double unix_timestamp = msg->header.stamp.toSec()+1;
             Eigen::Vector3d acc(msg->linear_acceleration.x, msg->linear_acceleration.y, msg->linear_acceleration.z);
             Eigen::Vector3d gyro(msg->angular_velocity.x, msg->angular_velocity.y, msg->angular_velocity.z);
             // add the IMU measurement to the preintegration map
@@ -2931,7 +2932,7 @@ private:
             
             // std::lock_guard<std::mutex> lock(data_mutex_);
             
-            double timestamp = msg->header.stamp.toSec();
+            double timestamp = msg->header.stamp.toSec()+1;
             has_imu_data_ = true;
             imu_count++;
             
@@ -2958,7 +2959,7 @@ private:
             // Process IMU data for real-time state propagation
             if (is_initialized_) {
                 propagateStateWithImu(*msg);
-                publishImuPose();
+                // publishImuPose();
             }
             
             // Report IMU statistics periodically based on message timestamps, not system time
@@ -3242,7 +3243,7 @@ private:
                 if (use_gps_instead_of_uwb_) {
                     // Add GPS position factor
                     for (const auto& gps : gps_measurements_) {
-                        if (std::abs(gps.timestamp - oldest_state.timestamp) < 0.01) {
+                        if (std::abs(gps.timestamp - oldest_state.timestamp) < 0.05) {
                             // --- A. 添加 GPS 位置因子 (保留) ---
                             if (gps.position_valid) {
                                 Eigen::Vector3d position_noise_std;
@@ -3280,7 +3281,6 @@ private:
                                     gps_vel_factor, nullptr, vel_parameter_blocks, vel_drop_set);
                                 marginalization_info->addResidualBlockInfo(vel_residual_info);
                             }
-                            
                             break;
                         }
                     }
@@ -3336,82 +3336,82 @@ private:
                         imu_factor_, nullptr, parameter_blocks, drop_set);
                     marginalization_info->addResidualBlockInfo(residual_info);
                     
-                    // Add orientation smoothness factor between states if enabled
-                    if (enable_orientation_smoothness_factor_) {
-                        ceres::CostFunction* orientation_factor = 
-                            OrientationSmoothnessFactor::Create(orientation_smoothness_weight_);
+                    // // Add orientation smoothness factor between states if enabled
+                    // if (enable_orientation_smoothness_factor_) {
+                    //     ceres::CostFunction* orientation_factor = 
+                    //         OrientationSmoothnessFactor::Create(orientation_smoothness_weight_);
                         
-                        std::vector<double*> orientation_params = {pose_param1, pose_param2};
-                        std::vector<int> orientation_drop_set = {0}; // Drop only the oldest pose
+                    //     std::vector<double*> orientation_params = {pose_param1, pose_param2};
+                    //     std::vector<int> orientation_drop_set = {0}; // Drop only the oldest pose
                         
-                        auto* orientation_residual = new ResidualBlockInfo(
-                            orientation_factor, nullptr, orientation_params, orientation_drop_set);
-                        marginalization_info->addResidualBlockInfo(orientation_residual);
-                    }
+                    //     auto* orientation_residual = new ResidualBlockInfo(
+                    //         orientation_factor, nullptr, orientation_params, orientation_drop_set);
+                    //     marginalization_info->addResidualBlockInfo(orientation_residual);
+                    // }
                 }
                 
                 // Add roll/pitch prior for oldest state if enabled
-                if (enable_roll_pitch_constraint_) {
-                    ceres::CostFunction* roll_pitch_factor = RollPitchPriorFactor::Create(roll_pitch_weight_);
-                    std::vector<double*> parameter_blocks = {pose_param1};
-                    std::vector<int> drop_set = {0}; // Drop the pose parameter
+                // if (enable_roll_pitch_constraint_) {
+                //     ceres::CostFunction* roll_pitch_factor = RollPitchPriorFactor::Create(roll_pitch_weight_);
+                //     std::vector<double*> parameter_blocks = {pose_param1};
+                //     std::vector<int> drop_set = {0}; // Drop the pose parameter
                     
-                    auto* residual_info = new ResidualBlockInfo(
-                        roll_pitch_factor, nullptr, parameter_blocks, drop_set);
-                    marginalization_info->addResidualBlockInfo(residual_info);
-                }
+                //     auto* residual_info = new ResidualBlockInfo(
+                //         roll_pitch_factor, nullptr, parameter_blocks, drop_set);
+                //     marginalization_info->addResidualBlockInfo(residual_info);
+                // }
                 
                 
-                sensor_msgs::Imu closest_imu = findClosestImuMeasurement(oldest_state.timestamp);
+                // sensor_msgs::Imu closest_imu = findClosestImuMeasurement(oldest_state.timestamp);
                
-                // If IMU has orientation and orientation factor is enabled, add yaw-only factor
-                if (enable_imu_orientation_factor_ && closest_imu.header.stamp.toSec() > 0 &&
-                    closest_imu.orientation_covariance[0] != -1) {
-                    Eigen::Quaterniond q_imu(
-                        closest_imu.orientation.w,
-                        closest_imu.orientation.x,
-                        closest_imu.orientation.y,
-                        closest_imu.orientation.z
-                    );
+                // // If IMU has orientation and orientation factor is enabled, add yaw-only factor
+                // if (enable_imu_orientation_factor_ && closest_imu.header.stamp.toSec() > 0 &&
+                //     closest_imu.orientation_covariance[0] != -1) {
+                //     Eigen::Quaterniond q_imu(
+                //         closest_imu.orientation.w,
+                //         closest_imu.orientation.x,
+                //         closest_imu.orientation.y,
+                //         closest_imu.orientation.z
+                //     );
                     
-                    ceres::CostFunction* yaw_factor = YawOnlyOrientationFactor::Create(q_imu, imu_orientation_weight_);
-                    std::vector<double*> yaw_params = {pose_param1};
-                    std::vector<int> yaw_drop_set = {0}; // Drop the pose parameter
+                //     ceres::CostFunction* yaw_factor = YawOnlyOrientationFactor::Create(q_imu, imu_orientation_weight_);
+                //     std::vector<double*> yaw_params = {pose_param1};
+                //     std::vector<int> yaw_drop_set = {0}; // Drop the pose parameter
                     
-                    auto* yaw_residual = new ResidualBlockInfo(
-                        yaw_factor, nullptr, yaw_params, yaw_drop_set);
-                    marginalization_info->addResidualBlockInfo(yaw_residual);
-                }
+                //     auto* yaw_residual = new ResidualBlockInfo(
+                //         yaw_factor, nullptr, yaw_params, yaw_drop_set);
+                //     marginalization_info->addResidualBlockInfo(yaw_residual);
+                // }
                 
-                // Add velocity constraint if enabled
-                if (enable_velocity_constraint_) {
-                    // Use adaptive max velocity based on IMU data
-                    double adaptive_max_velocity = max_velocity_;
-                    if (imu_buffer_.size() > 10) {
-                        adaptive_max_velocity = estimateMaxVelocityFromImu();
-                    }
+                // // Add velocity constraint if enabled
+                // if (enable_velocity_constraint_) {
+                //     // Use adaptive max velocity based on IMU data
+                //     double adaptive_max_velocity = max_velocity_;
+                //     if (imu_buffer_.size() > 10) {
+                //         adaptive_max_velocity = estimateMaxVelocityFromImu();
+                //     }
                     
-                    ceres::CostFunction* vel_constraint = VelocityMagnitudeConstraint::Create(
-                        adaptive_max_velocity, velocity_constraint_weight_);
-                    std::vector<double*> parameter_blocks = {vel_param1};
-                    std::vector<int> drop_set = {0}; // Drop the velocity parameter
+                //     ceres::CostFunction* vel_constraint = VelocityMagnitudeConstraint::Create(
+                //         adaptive_max_velocity, velocity_constraint_weight_);
+                //     std::vector<double*> parameter_blocks = {vel_param1};
+                //     std::vector<int> drop_set = {0}; // Drop the velocity parameter
                     
-                    auto* residual_info = new ResidualBlockInfo(
-                        vel_constraint, nullptr, parameter_blocks, drop_set);
-                    marginalization_info->addResidualBlockInfo(residual_info);
-                }
+                //     auto* residual_info = new ResidualBlockInfo(
+                //         vel_constraint, nullptr, parameter_blocks, drop_set);
+                //     marginalization_info->addResidualBlockInfo(residual_info);
+                // }
                 
-                // Add horizontal velocity incentive if enabled
-                if (enable_horizontal_velocity_incentive_) {
-                    ceres::CostFunction* h_vel_incentive = HorizontalVelocityIncentiveFactor::Create(
-                        min_horizontal_velocity_, horizontal_velocity_weight_);
-                    std::vector<double*> parameter_blocks = {vel_param1, pose_param1};
-                    std::vector<int> drop_set = {0, 1}; // Drop both parameters
+                // // Add horizontal velocity incentive if enabled
+                // if (enable_horizontal_velocity_incentive_) {
+                //     ceres::CostFunction* h_vel_incentive = HorizontalVelocityIncentiveFactor::Create(
+                //         min_horizontal_velocity_, horizontal_velocity_weight_);
+                //     std::vector<double*> parameter_blocks = {vel_param1, pose_param1};
+                //     std::vector<int> drop_set = {0, 1}; // Drop both parameters
                     
-                    auto* residual_info = new ResidualBlockInfo(
-                        h_vel_incentive, nullptr, parameter_blocks, drop_set);
-                    marginalization_info->addResidualBlockInfo(residual_info);
-                }
+                //     auto* residual_info = new ResidualBlockInfo(
+                //         h_vel_incentive, nullptr, parameter_blocks, drop_set);
+                //     marginalization_info->addResidualBlockInfo(residual_info);
+                // }
                 
                 // // Add bias constraint
                 // if (enable_bias_estimation_) {
