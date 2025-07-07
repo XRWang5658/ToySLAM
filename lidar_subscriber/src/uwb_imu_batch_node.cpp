@@ -25,6 +25,8 @@
 #include <sstream>  // For std::stringstream
 #include <fstream>  // For std::ofstream
 
+#include <random>
+
 // Added for cooridnate frame conversions
 #include "../include/gnss_tools.h"
 GNSS_Tools m_GNSS_Tools;
@@ -1235,6 +1237,16 @@ public:
         // Load topic name parameters
         private_nh.param<std::string>("imu_topic", imu_topic_, "/imu/data");
         private_nh.param<std::string>("uwb_topic", uwb_topic_, "/sensor_simulator/UWBPoistionPS");
+
+        private_nh.param<bool>("subscribe_to_ground_truth", subscribe_to_ground_truth_, false);
+        private_nh.param<std::string>("ground_truth_topic", ground_truth_topic_, "/novatel_data/inspvax_gt");
+        private_nh.param<double>("artificial_pos_noise_std", artificial_pos_noise_std_, 0.5);
+        private_nh.param<double>("artificial_vel_noise_std", artificial_vel_noise_std_, 0.1);
+
+        private_nh.param<std::string>("gps_log_path", gps_log_path_, "gps_log.csv");
+        private_nh.param<std::string>("gt_log_path", gt_log_path_, "gt_log.csv");
+        private_nh.param<std::string>("optimized_log_path", optimized_log_path_, "optimized_log.csv");
+
         private_nh.param<int>("imu_queue_size", imu_queue_size_, 1000);
         private_nh.param<int>("uwb_queue_size", uwb_queue_size_, 100);
         
@@ -1425,6 +1437,7 @@ public:
             }
             // logger_ state is now reset automatically by log().
         // end of logger initialization
+        openLogFiles();
         
         // Initialize with small non-zero biases that match your simulation
         initial_acc_bias_ = Eigen::Vector3d(initial_acc_bias_x_, initial_acc_bias_y_, initial_acc_bias_z_);
@@ -1447,6 +1460,11 @@ public:
                 ROS_ERROR("Unsupported gps_message_type: %s. GPS fusion disabled.", gnss_message_type_.c_str());
                 use_gps_instead_of_uwb_ = false;
             }
+            if (subscribe_to_ground_truth_) {
+                ground_truth_sub_ = nh.subscribe(ground_truth_topic_, gnss_queue_size_, &UwbImuFusion::groundTruthCallback, this);
+                ROS_INFO("Subscribing to Ground Truth topic [novatel_msgs/INSPVAX]: %s", ground_truth_topic_.c_str());
+            }
+
         } else {
             uwb_sub_ = nh.subscribe(uwb_topic_, uwb_queue_size_, &UwbImuFusion::uwbCallback, this);
             ROS_INFO("Using UWB+IMU fusion mode");
@@ -1454,7 +1472,6 @@ public:
             ROS_INFO("UWB position noise: %.3f m", uwb_position_noise_);
         }
 
-        // gt_sub_ = nh.subscribe(gt_topic_, gt_queue_size_, &UwbImuFusion::groundTruthCallback, this);
         
         optimized_pose_pub_ = nh.advertise<nav_msgs::Odometry>(optimized_pose_topic_, optimized_pose_queue_size_);
         imu_pose_pub_ = nh.advertise<nav_msgs::Odometry>(imu_pose_topic_, imu_pose_queue_size_);
@@ -1536,6 +1553,16 @@ public:
             delete last_marginalization_info_;
             last_marginalization_info_ = nullptr;
         }
+
+        if (gps_log_file_.is_open()) {
+            gps_log_file_.close();
+        }
+        if (gt_log_file_.is_open()) {
+            gt_log_file_.close();
+        }
+        if (optimized_log_file_.is_open()) {
+            optimized_log_file_.close();
+        }
     }
 
 private:
@@ -1548,7 +1575,6 @@ private:
     bool use_gps_velocity_;
     
     // GPS-related members
-    ros::Subscriber gt_sub_;
     std::string gps_topic_;
     std::string gt_topic_;
     int gps_queue_size_;
@@ -1556,6 +1582,24 @@ private:
     double gps_position_noise_;
     double gps_velocity_noise_;
     double gps_orientation_noise_;
+
+    // --- Ground Truth 相关成员 ---
+    ros::Subscriber ground_truth_sub_;
+    std::string ground_truth_topic_;
+    bool subscribe_to_ground_truth_;
+    std::ofstream gt_log_file_;
+    std::string gt_log_path_;
+
+    // GPS Input (FGO输入) 相关成员
+    double artificial_pos_noise_std_;
+    double artificial_vel_noise_std_;
+    std::ofstream gps_log_file_;
+    std::string gps_log_path_;
+    std::default_random_engine random_generator_;
+
+    // Optimized State (优化结果) 记录成员
+    std::ofstream optimized_log_file_;
+    std::string optimized_log_path_;
 
     // added new gnss related members
     ros::Subscriber gnss_sub_;
@@ -2311,6 +2355,82 @@ private:
         }
     }
 
+    void openLogFiles() {
+        // GPS 输入日志
+        gps_log_file_.open(gps_log_path_);
+        if (gps_log_file_.is_open()) {
+            gps_log_file_ << "timestamp,px,py,pz,vx,vy,vz\n";
+            ROS_INFO("Logging FGO GPS input to: %s", gps_log_path_.c_str());
+        } else {
+            ROS_ERROR("Failed to open GPS log file: %s", gps_log_path_.c_str());
+        }
+
+        // Ground Truth 真值日志
+        gt_log_file_.open(gt_log_path_);
+        if (gt_log_file_.is_open()) {
+            gt_log_file_ << "timestamp,px,py,pz,vx,vy,vz,roll,pitch,yaw\n";
+            ROS_INFO("Logging Ground Truth data to: %s", gt_log_path_.c_str());
+        } else {
+            ROS_ERROR("Failed to open Ground Truth log file: %s", gt_log_path_.c_str());
+        }
+        
+        // 优化结果日志
+        optimized_log_file_.open(optimized_log_path_);
+        if (optimized_log_file_.is_open()) {
+            optimized_log_file_ << "timestamp,px,py,pz,qx,qy,qz,qw,vx,vy,vz,bax,bay,baz,bgx,bgy,bgz\n";
+            ROS_INFO("Logging optimized state data to: %s", optimized_log_path_.c_str());
+        } else {
+            ROS_ERROR("Failed to open optimized state log file: %s", optimized_log_path_.c_str());
+        }
+    }
+
+    void logGpsData(const GnssMeasurement& meas) {
+        if (gps_log_file_.is_open()) {
+            gps_log_file_ << std::fixed << std::setprecision(6) << meas.timestamp << ","
+                            << meas.position.x() << "," << meas.position.y() << "," << meas.position.z() << ","
+                            << meas.velocity.x() << "," << meas.velocity.y() << "," << meas.velocity.z() << "\n";
+        }
+    }
+
+    void logGroundTruthData(const GnssMeasurement& meas) {
+        if (gt_log_file_.is_open()) {
+            Eigen::Vector3d rpy = meas.orientation.toRotationMatrix().eulerAngles(2, 1, 0);
+            gt_log_file_ << std::fixed << std::setprecision(6) << meas.timestamp << ","
+                                << meas.position.x() << "," << meas.position.y() << "," << meas.position.z() << ","
+                                << meas.velocity.x() << "," << meas.velocity.y() << "," << meas.velocity.z() << ","
+                                << rpy.z() << "," << rpy.y() << "," << rpy.x() << "\n";
+        }
+    }
+
+    void logOptimizedState(const State& state) {
+        if (optimized_log_file_.is_open()) {
+            optimized_log_file_ << std::fixed << std::setprecision(6) << state.timestamp << ","
+                                    << state.position.x() << "," << state.position.y() << "," << state.position.z() << ","
+                                    << state.orientation.x() << "," << state.orientation.y() << "," << state.orientation.z() << "," << state.orientation.w() << ","
+                                    << state.velocity.x() << "," << state.velocity.y() << "," << state.velocity.z() << ","
+                                    << state.acc_bias.x() << "," << state.acc_bias.y() << "," << state.acc_bias.z() << ","
+                                    << state.gyro_bias.x() << "," << state.gyro_bias.y() << "," << state.gyro_bias.z() << "\n";
+        }
+    }
+
+    void groundTruthCallback(const novatel_msgs::INSPVAX::ConstPtr& msg) {
+        std::optional<GnssMeasurement> meas_opt = inspvax_parser_.parse(msg);
+        if (meas_opt) {
+            logGroundTruthData(*meas_opt);
+            
+            // 可选: 发布真值轨迹用于RViz可视化
+            geometry_msgs::PoseStamped pose_stamped;
+            pose_stamped.header.stamp = ros::Time(meas_opt->timestamp);
+            pose_stamped.header.frame_id = world_frame_id_;
+            pose_stamped.pose.position.x = meas_opt->position.x();
+            pose_stamped.pose.position.y = meas_opt->position.y();
+            pose_stamped.pose.position.z = meas_opt->position.z();
+            pose_stamped.pose.orientation.w = 1.0;
+            gt_path_msg_.header.stamp = pose_stamped.header.stamp;
+            gt_path_msg_.poses.push_back(pose_stamped);
+            gt_path_pub_.publish(gt_path_msg_);
+        }
+    }
     // void groundTruthCallback(const novatel_msgs::INSPVAX::ConstPtr& msg) {
     //     // 1. 时间戳转换
     //     double unix_timestamp = gpsToUnixTime(msg->header.gps_week, msg->header.gps_week_seconds/1000);
@@ -2364,11 +2484,35 @@ private:
     // }
 
     void inspvaxCallback(const novatel_msgs::INSPVAX::ConstPtr& msg) {
-        // 调用对应的解析器
+        // 1. 解析消息
         std::optional<GnssMeasurement> meas_opt = inspvax_parser_.parse(msg);
-        // 如果解析成功，则传递给统一的处理函数
+        
         if (meas_opt) {
-            processGnssMeasurement(*meas_opt);
+            GnssMeasurement meas = *meas_opt;
+
+            // 2. 条件性地添加噪声
+            if (subscribe_to_ground_truth_ && (gnss_topic_ == ground_truth_topic_) &&
+                (artificial_pos_noise_std_ > 0.0 || artificial_vel_noise_std_ > 0.0))
+            {
+                ROS_INFO_ONCE("Adding artificial noise because gps_topic and ground_truth_topic are the same.");
+                
+                std::normal_distribution<double> pos_noise(0.0, artificial_pos_noise_std_);
+                std::normal_distribution<double> vel_noise(0.0, artificial_vel_noise_std_);
+
+                meas.position.x() += pos_noise(random_generator_);
+                meas.position.y() += pos_noise(random_generator_);
+                meas.position.z() += pos_noise(random_generator_);
+
+                meas.velocity.x() += vel_noise(random_generator_);
+                meas.velocity.y() += vel_noise(random_generator_);
+                meas.velocity.z() += vel_noise(random_generator_);
+            }
+            
+            // 3. 记录FGO的GPS输入 (可能是原始的，也可能是加噪后的)
+            logGpsData(meas);
+
+            // 4. 使用该测量值进行融合处理
+            processGnssMeasurement(meas);
         }
     }
 
@@ -2421,7 +2565,7 @@ private:
                     current_state_.orientation = Eigen::Quaterniond::Identity();
                     ROS_INFO("Initializer: Orientation set to Identity as a fallback.");
                 }
-                current_state_.orientation = Eigen::Quaterniond::Identity();
+                // current_state_.orientation = Eigen::Quaterniond::Identity();
             }
 
             // --- Initialize Velocity ---
@@ -2505,6 +2649,7 @@ private:
                 else{
                     propagated_state.orientation = state_window_.back().orientation;
                 }
+                propagated_state.orientation = state_window_.back().orientation;
             }
             if (use_gps_velocity_ && gps.velocity_valid) {
                 propagated_state.velocity = gps.velocity;
@@ -4321,7 +4466,7 @@ private:
                         variables[i].bias[3], variables[i].bias[4], variables[i].bias[5]);
                     
                     // Ensure biases stay within reasonable limits
-                    clampBiases(new_acc_bias, new_gyro_bias);
+                    // clampBiases(new_acc_bias, new_gyro_bias);
 
                     // check the difference of new and old biases
                     double acc_bias_diff = (new_acc_bias - state_window_[i].acc_bias).norm();
@@ -4329,8 +4474,8 @@ private:
 
                     // If the difference is too large, repropagate the preintegration
                     if (acc_bias_diff > 0.0005 || gyro_bias_diff > 0.0005) {
-                        // ROS_WARN("Large bias difference detected: acc [%.3f, %.3f, %.3f], gyro [%.3f, %.3f, %.3f]",
-                        //     acc_bias_diff, gyro_bias_diff);
+                        ROS_WARN("Large bias difference detected: acc [%.3f, %.3f, %.3f], gyro [%.3f, %.3f, %.3f]",
+                            acc_bias_diff, gyro_bias_diff);
 
                         std::pair<double, double> key(state_window_[i].timestamp, state_window_[i+1].timestamp);
                         // repropagate calculating the preintegration
@@ -4372,6 +4517,8 @@ private:
                     adaptive_max_velocity = estimateMaxVelocityFromImu();
                 }
                 clampVelocity(current_state_.velocity, adaptive_max_velocity);
+
+                logOptimizedState(current_state_);
             }
 
             // Log detailed velocity information
