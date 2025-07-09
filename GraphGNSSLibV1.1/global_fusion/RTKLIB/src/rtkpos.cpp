@@ -44,7 +44,8 @@
 // google eigen
 #include <Eigen/Eigen>
 #include <Eigen/Dense>
-#include<Eigen/Core>
+#include <Eigen/Core>
+#include <cmath>
 
 #include <ceres/ceres.h>
 #include <ceres/rotation.h>
@@ -140,6 +141,45 @@ ros::Subscriber sub_rtk_info;
 ros::Publisher pub_rtkpos_odometry_solution,pub_rtkpos_odometry_integer;
 ros::Publisher pub_station_raw;
 GNSS_Tools m_GNSS_Tools_rtkpos; // utilities
+
+double gpsToUnixTime(uint32_t gps_week, double gps_seconds) {
+    // Debug input parameters
+    ROS_DEBUG("Converting GPS time: week=%u, sec=%.3f", gps_week, gps_seconds);
+    
+    // Detect high-precision time format and scale appropriately
+    if (gps_seconds > 1000000.0) {
+        // Check if it's likely microseconds (common GPS format)
+        if (gps_seconds < 604800000000.0) { // Less than a week in microseconds
+            ROS_INFO_ONCE("Converting GPS time from microseconds format");
+            gps_seconds /= 1000000.0;  // Convert from microseconds to seconds
+        }
+    }
+    
+    // GPS epoch started on January 6, 1980 00:00:00 UTC
+    // Unix epoch started on January 1, 1970 00:00:00 UTC
+    const double GPS_UNIX_OFFSET = 315964800.0; // Seconds between Unix and GPS epochs
+    const double SECONDS_IN_WEEK = 604800.0;
+    const double LEAP_SECONDS = 18.0;
+    
+    // Input validation (after possible scaling)
+    if (gps_week > 4000 || gps_seconds < 0 || gps_seconds >= SECONDS_IN_WEEK) {
+        ROS_WARN("Invalid GPS time (week=%u, sec=%.3f)", gps_week, gps_seconds);
+        return 0;
+    }
+    
+    // Calculate seconds since GPS epoch
+    double gps_time = gps_week * SECONDS_IN_WEEK + gps_seconds;
+    
+    // Convert to Unix time by adding the offset and subtracting leap seconds
+    double unix_time = gps_time + GPS_UNIX_OFFSET - LEAP_SECONDS;
+    
+    // Log successful conversion
+    ROS_DEBUG("GPS time converted: week=%u, sec=%.3f -> unix=%.3f", 
+             gps_week, gps_seconds, unix_time);
+             
+    return unix_time;
+}
+
 
 extern void rtkposRegisterPub(ros::NodeHandle &n)
 {
@@ -1932,18 +1972,59 @@ static int relpos(rtk_t *rtk, const obsd_t *obs, int nu, int nr,
 
     /* Weisong: publish solution */
     Eigen::Matrix<double, 3, 1> ECEF;
+    Eigen::Matrix<double, 3, 1> ECEF_vel;
     ECEF<<rtk->sol.rr[0], rtk->sol.rr[1], rtk->sol.rr[2];
-    double cur_time = static_cast<double>(rtk->sol.time.time) + rtk->sol.time.sec;
+    ECEF_vel<<rtk->sol.rr[3], rtk->sol.rr[4], rtk->sol.rr[5];
+    double cur_time = static_cast<double>(rtk->sol.time.time) + rtk->sol.time.sec-18;
     nav_msgs::Odometry odometry;
     odometry.header.frame_id = "map";
-    odometry.header.stamp = ros::Time(cur_time);
+    odometry.header.stamp = ros::Time().fromSec(std::round(cur_time));
     odometry.child_frame_id = "map";
-    odometry.pose.pose.position.x = ECEF(0); // ENU(0);
-    odometry.pose.pose.position.y = ECEF(1); // ENU(1);
-    odometry.pose.pose.position.z = ECEF(2); // ENU(2);
+    odometry.pose.pose.position.x = ECEF(0); 
+    odometry.pose.pose.position.y = ECEF(1); 
+    odometry.pose.pose.position.z = ECEF(2); 
+    odometry.twist.twist.linear.x = ECEF_vel(0);
+    odometry.twist.twist.linear.y = ECEF_vel(1);
+    odometry.twist.twist.linear.z = ECEF_vel(2);
     odometry.pose.covariance[0] = rtk->sol.qr[0];
-    odometry.pose.covariance[1] = rtk->sol.qr[1];
-    odometry.pose.covariance[2] = rtk->sol.qr[2];
+    odometry.pose.covariance[7] = rtk->sol.qr[1];
+    odometry.pose.covariance[14] = rtk->sol.qr[2];
+        // The qr array holds {xx, yy, zz, xy, yz, zx}
+    const auto& Pa = (rtk->sol.stat == SOLQ_FIX) ? rtk->Pa : rtk->P;
+    const int n_dim = (rtk->sol.stat == SOLQ_FIX) ? rtk->na : rtk->nx;
+
+    // Diagonal elements
+    odometry.pose.covariance[0]  = rtk->sol.qr[0]; // Var(x)
+    odometry.pose.covariance[7]  = rtk->sol.qr[1]; // Var(y)
+    odometry.pose.covariance[14] = rtk->sol.qr[2]; // Var(z)
+    
+    // Off-diagonal elements (symmetric)
+    odometry.pose.covariance[1] = odometry.pose.covariance[6] = rtk->sol.qr[3]; // Cov(x,y)
+    odometry.pose.covariance[2] = odometry.pose.covariance[12] = rtk->sol.qr[5]; // Cov(x,z)
+    odometry.pose.covariance[8] = odometry.pose.covariance[13] = rtk->sol.qr[4]; // Cov(y,z)
+
+    // --- Correctly fill Twist Covariance (3x3 matrix) ---
+    if (rtk->opt.dynamics) // Only if velocity is part of the state
+    {
+        odometry.twist.covariance[0]  = Pa[3 + 3 * n_dim]; // Var(vx)
+        odometry.twist.covariance[7]  = Pa[4 + 4 * n_dim]; // Var(vy)
+        odometry.twist.covariance[14] = Pa[5 + 5 * n_dim]; // Var(vz)
+
+        // Off-diagonal velocity covariance if needed
+        odometry.twist.covariance[1] = odometry.twist.covariance[6] = Pa[3 + 4 * n_dim]; // Cov(vx,vy)
+        odometry.twist.covariance[2] = odometry.twist.covariance[12] = Pa[3 + 5 * n_dim]; // Cov(vx,vz)
+        odometry.twist.covariance[8] = odometry.twist.covariance[13] = Pa[4 + 5 * n_dim]; // Cov(vy,vz)
+    }
+    else // If not in dynamics mode, velocity is not estimated in the filter.
+    {
+        // Set a large uncertainty to indicate it's unknown
+        const double unknown_vel_variance = 0;
+        odometry.twist.covariance[0]  = unknown_vel_variance;
+        odometry.twist.covariance[7]  = unknown_vel_variance;
+        odometry.twist.covariance[14] = unknown_vel_variance;
+    }
+
+    pub_rtkpos_odometry_solution.publish(odometry);
 
     pub_rtkpos_odometry_solution.publish(odometry);
     
