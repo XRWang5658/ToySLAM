@@ -319,6 +319,36 @@ Eigen::MatrixXd ecef2llh(Eigen::MatrixXd data) // transform the ecef to llh
   */
 }
 
+  /*
+author: Xiangru Wang
+function: ecef velocity to enu velocity
+input: original llh, and current ecef velocity(Matrix3d)
+output: velocity in ENU frame（Matrix3d）
+*/
+Eigen::MatrixXd ecefVelocity2enu(Eigen::MatrixXd originllh, Eigen::MatrixXd v_ecef)
+{
+  double pi = 3.1415926; // pi常数
+  double DEG2RAD = pi / 180.0;
+
+  Eigen::MatrixXd v_enu; 
+  v_enu.resize(3, 1); // 输出ENU速度向量为3X1
+
+  // 从originllh中提取经纬度（单位为度）
+  double lonDeg = originllh(0);
+  double latDeg = originllh(1);
+  // 转换为弧度
+  double lon = lonDeg * DEG2RAD;
+  double lat = latDeg * DEG2RAD;
+
+  // 使用旋转矩阵将ECEF速度向量转换到ENU速度向量
+  // 这里直接对速度分量进行旋转转换，不涉及平移操作
+  v_enu(0) = -sin(lon) * v_ecef(0) + cos(lon) * v_ecef(1);
+  v_enu(1) = -sin(lat) * cos(lon) * v_ecef(0) - sin(lat) * sin(lon) * v_ecef(1) + cos(lat) * v_ecef(2);
+  v_enu(2) =  cos(lat) * cos(lon) * v_ecef(0) + cos(lat) * sin(lon) * v_ecef(1) + sin(lat) * v_ecef(2);
+
+  return v_enu;
+}
+
 /*
 author: WEN Weisong, visiting Ph.D student in Univeristy of California, Berkeley. (weisong.wen@berkeley.edu)
 function: ecef to enu

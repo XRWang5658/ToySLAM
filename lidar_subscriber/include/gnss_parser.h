@@ -56,6 +56,15 @@ public:
         ref_altitude_ = 0.0;
         enu_ref_.setZero();
     }
+    bool getEnuReference(double& lat, double& lon, double& alt) const {
+        if (has_gps_reference_) {
+            lat = ref_latitude_;
+            lon = ref_longitude_;
+            alt = ref_altitude_;
+            return true;
+        }
+        return false;
+    }
 protected:
     bool has_gps_reference_ = false;
     double ref_latitude_ = 0.0, ref_longitude_ = 0.0, ref_altitude_ = 0.0;
@@ -179,22 +188,32 @@ public:
         meas.position_valid = true;
         meas.velocity_valid = true;
         
-        // Extract standard deviation from covariance matrix (sqrt of diagonal)
-        // Pose covariance: indices 0, 7, 14 for x, y, z variance
-        meas.position_std_dev << sqrt(msg->pose.covariance[0]),
-                                 sqrt(msg->pose.covariance[7]),
-                                 sqrt(msg->pose.covariance[14]);
-        
-        // Twist covariance: indices 0, 7, 14 for vx, vy, vz variance
-        meas.velocity_std_dev << sqrt(msg->twist.covariance[0]),
-                                 sqrt(msg->twist.covariance[7]),
-                                 sqrt(msg->twist.covariance[14]);
+        // --- 协方差转换 ---
+        Eigen::Matrix3d R = m_gnss_tools_.ecef2enuRotation(this->enu_ref_);
 
-        meas.orientation_valid = false; // Orientation in Odometry from ECEF is not typically used
+        Eigen::Matrix3d pose_cov_ecef = Eigen::Matrix3d::Zero();
+        pose_cov_ecef(0, 0) = msg->pose.covariance[0];
+        pose_cov_ecef(1, 1) = msg->pose.covariance[7];
+        pose_cov_ecef(2, 2) = msg->pose.covariance[14];
+        
+        Eigen::Matrix3d pose_cov_enu = R * pose_cov_ecef * R.transpose();
+        meas.position_std_dev << std::sqrt(pose_cov_enu(0, 0)),
+                                 std::sqrt(pose_cov_enu(1, 1)),
+                                 std::sqrt(pose_cov_enu(2, 2));
+
+        Eigen::Matrix3d vel_cov_ecef = Eigen::Matrix3d::Zero();
+        vel_cov_ecef(0, 0) = msg->twist.covariance[0];
+        vel_cov_ecef(1, 1) = msg->twist.covariance[7];
+        vel_cov_ecef(2, 2) = msg->twist.covariance[14];
+
+        Eigen::Matrix3d vel_cov_enu = R * vel_cov_ecef * R.transpose();
+        meas.velocity_std_dev << std::sqrt(vel_cov_enu(0, 0)),
+                                 std::sqrt(vel_cov_enu(1, 1)),
+                                 std::sqrt(vel_cov_enu(2, 2));
+
         return meas;
     }
 private:
-    // 每个解析器实例都拥有自己的工具对象
     GNSS_Tools m_gnss_tools_; 
 };
 

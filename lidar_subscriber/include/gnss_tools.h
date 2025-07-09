@@ -109,7 +109,7 @@ Eigen::MatrixXd getAllMeasurements(nlosexclusion::GNSS_Raw_Array GNSS_data)
   }
   return eAllMeasurement;
 }
-  /*
+/*
 author: WEN Weisong, visiting Ph.D student in Univeristy of California, Berkeley. (weisong.wen@berkeley.edu)
 function: check GNSS availability
 input: GNSS data
@@ -152,6 +152,31 @@ int getGPSCnt(nlosexclusion::GNSS_Raw_Array GNSS_data)
     }
   }
   return cnt;
+}
+
+// This function computes the rotation matrix to transform coordinates from ECEF to ENU
+Eigen::Matrix3d ecef2enuRotation(double lat_rad, double lon_rad) {
+    double s_lat = std::sin(lat_rad);
+    double c_lat = std::cos(lat_rad);
+    double s_lon = std::sin(lon_rad);
+    double c_lon = std::cos(lon_rad);
+
+    Eigen::Matrix3d R;
+    // This matrix is formed by the ENU unit vectors in the ECEF frame
+    // Row 0: East vector
+    // Row 1: North vector
+    // Row 2: Up vector
+    R << -s_lon,       c_lon,      0,
+         -s_lat*c_lon, -s_lat*s_lon, c_lat,
+          c_lat*c_lon,  c_lat*s_lon, s_lat;
+          
+    return R;
+}
+
+// Overload if your enu_ref_ is a struct/object
+Eigen::Matrix3d ecef2enuRotation(const Eigen::Vector3d& enu_ref) {
+    // Make sure lat/lon are in RADIANS for std::sin/cos
+    return ecef2enuRotation(enu_ref[1], enu_ref[0]); 
 }
 
 bool validateSV(int gpsCnt, int BeidouCnt)
