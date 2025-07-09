@@ -1488,6 +1488,7 @@ public:
         velocity_error_pub_ = nh.advertise<visualization_msgs::MarkerArray>("/errors/velocity", 1);
 
         // Initialize path messages
+        gt_path_msg_.header.frame_id = world_frame_id_;
         gps_path_msg_.header.frame_id = world_frame_id_;
         optimized_path_msg_.header.frame_id = world_frame_id_;
         imu_path_msg_.header.frame_id = world_frame_id_;
@@ -1511,6 +1512,10 @@ public:
         last_marginalization_info_ = nullptr;
         
         initializeState();
+
+        all_parsers_.push_back(&gnss_comm_parser_);
+        all_parsers_.push_back(&inspvax_parser_);
+        all_parsers_.push_back(&odom_parser_);
         
         // Setup optimization timer
         optimization_timer_ = nh.createTimer(ros::Duration(1.0/optimization_frequency_), 
@@ -1611,6 +1616,8 @@ private:
     GnssCommParser gnss_comm_parser_;
     InspvaxParser inspvax_parser_;
     OdometryParser odom_parser_;
+
+    std::vector<GnssParser*> all_parsers_;
 
     Eigen::Vector3d ENU_ref;
 
@@ -1844,6 +1851,32 @@ private:
         
         // Publish the final path
         final_path_pub_.publish(final_path_msg_);
+    }
+
+    void syncEnuReference() {
+        GnssParser* source_parser = nullptr;
+
+        // 1. 寻找一个已经设置了参考点的“源”解析器
+        for (GnssParser* parser : all_parsers_) {
+            if (parser->hasEnuReference()) {
+                source_parser = parser;
+                break; // 找到第一个就退出
+            }
+        }
+
+        // 2. 如果找到了源，就用它的参考点去更新所有其他解析器
+        if (source_parser != nullptr) {
+            double ref_lat, ref_lon, ref_alt;
+            // 从源解析器获取参考点坐标
+            if (source_parser->getEnuReference(ref_lat, ref_lon, ref_alt)) {
+                // 广播给所有解析器（包括源自身，重复设置无害）
+                for (GnssParser* parser : all_parsers_) {
+                    if (!parser->hasEnuReference()) {
+                        parser->setEnuReference(ref_lat, ref_lon, ref_alt);
+                    }
+                }
+            }
+        }
     }
 
     // Calculate and visualize position error between optimized pose and GPS
@@ -2425,63 +2458,13 @@ private:
             pose_stamped.pose.position.x = meas_opt->position.x();
             pose_stamped.pose.position.y = meas_opt->position.y();
             pose_stamped.pose.position.z = meas_opt->position.z();
-            pose_stamped.pose.orientation.w = 1.0;
+            // pose_stamped.pose.orientation.w = 1.0;
             gt_path_msg_.header.stamp = pose_stamped.header.stamp;
             gt_path_msg_.poses.push_back(pose_stamped);
             gt_path_pub_.publish(gt_path_msg_);
         }
     }
-    // void groundTruthCallback(const novatel_msgs::INSPVAX::ConstPtr& msg) {
-    //     // 1. 时间戳转换
-    //     double unix_timestamp = gpsToUnixTime(msg->header.gps_week, msg->header.gps_week_seconds/1000);
 
-    //     // 2. ENU坐标转换（不加噪声）
-    //     Eigen::Vector3d enu_position = convertGpsToEnu(msg->latitude, msg->longitude, msg->altitude);
-
-    //     // 3. 速度转换
-    //     Eigen::Vector3d body_velocity(
-    //         msg->east_velocity,
-    //         msg->north_velocity,
-    //         msg->up_velocity);
-    //     Eigen::Vector3d enu_velocity = convertRfuToEnu(body_velocity, msg->roll, msg->pitch, msg->azimuth);
-
-    //     // 4. 姿态转换
-    //     double roll_rad = msg->roll * M_PI / 180.0;
-    //     double pitch_rad = msg->pitch * M_PI / 180.0;
-    //     double azimuth_rad = msg->azimuth * M_PI / 180.0;
-    //     double yaw_enu = M_PI/2.0 - azimuth_rad;
-    //     Eigen::Quaterniond orientation = 
-    //         Eigen::AngleAxisd(yaw_enu, Eigen::Vector3d::UnitZ()) *
-    //         Eigen::AngleAxisd(pitch_rad, Eigen::Vector3d::UnitY()) *
-    //         Eigen::AngleAxisd(roll_rad, Eigen::Vector3d::UnitX());
-    //     orientation.normalize();
-
-    //     // 5. 发布 Path 消息
-    //     geometry_msgs::PoseStamped gt_pose;
-    //     gt_pose.header.stamp = ros::Time(unix_timestamp);
-    //     gt_pose.header.frame_id = world_frame_id_;
-    //     gt_pose.pose.position.x = enu_position.x();
-    //     gt_pose.pose.position.y = enu_position.y();
-    //     gt_pose.pose.position.z = enu_position.z();
-    //     gt_pose.pose.orientation.w = orientation.w();
-    //     gt_pose.pose.orientation.x = orientation.x();
-    //     gt_pose.pose.orientation.y = orientation.y();
-    //     gt_pose.pose.orientation.z = orientation.z();
-
-    //     gt_path_msg_.header = gt_pose.header;
-    //     gt_path_msg_.poses.push_back(gt_pose);
-    //     gt_path_pub_.publish(gt_path_msg_);
-
-    //     // 6. 可选：发布 Odometry（含速度）
-    //     nav_msgs::Odometry gt_odom;
-    //     gt_odom.header = gt_pose.header;
-    //     gt_odom.pose.pose = gt_pose.pose;
-    //     gt_odom.twist.twist.linear.x = enu_velocity.x();
-    //     gt_odom.twist.twist.linear.y = enu_velocity.y();
-    //     gt_odom.twist.twist.linear.z = enu_velocity.z();
-    //     // 你可以添加一个 gt_odom_pub_ 发布器来发布 gt_odom
-    //     gt_odom_pub_.publish(gt_odom);
-    // }
 
     void inspvaxCallback(const novatel_msgs::INSPVAX::ConstPtr& msg) {
         // 1. 解析消息
@@ -2510,6 +2493,7 @@ private:
             
             // 3. 记录FGO的GPS输入 (可能是原始的，也可能是加噪后的)
             logGpsData(meas);
+            syncEnuReference();
 
             // 4. 使用该测量值进行融合处理
             processGnssMeasurement(meas);
@@ -2521,7 +2505,10 @@ private:
         std::optional<GnssMeasurement> meas_opt = gnss_comm_parser_.parse(msg);
         // 如果解析成功，则传递给统一的处理函数
         if (meas_opt) {
+            GnssMeasurement meas = *meas_opt;
             processGnssMeasurement(*meas_opt);
+            syncEnuReference();
+            logGpsData(meas);
         }
     }
 
@@ -2531,7 +2518,10 @@ private:
         
         // 如果解析成功，则传递给统一的处理函数
         if (meas_opt) {
+            GnssMeasurement meas = *meas_opt;
             processGnssMeasurement(*meas_opt);
+            syncEnuReference();
+            logGpsData(meas);
         }
     }
 
@@ -2621,6 +2611,9 @@ private:
                 return;
             }
 
+            performPreintegrationBetweenKeyframes_(state_window_.back().timestamp, gps.timestamp);
+            
+
             // --- Propagate and Update State ---
             // 1. Propagate the last keyframe's state forward to the new timestamp using IMU data.
             State propagated_state = propagateState(state_window_.back(), gps.timestamp);
@@ -2635,21 +2628,31 @@ private:
             } else {
                 // If GPS orientation is not used, we can still use the IMU orientation as a fallback.
                 sensor_msgs::Imu closest_imu = findClosestImuMeasurement(gps.timestamp);
-                if (closest_imu.header.stamp.toSec() > 0 && closest_imu.orientation_covariance[0] != -1) {
+                Eigen::Quaterniond imu_orientation;
+                imu_orientation = Eigen::Quaterniond(
+                    closest_imu.orientation.w, closest_imu.orientation.x,
+                    closest_imu.orientation.y, closest_imu.orientation.z);
+                if (closest_imu.header.stamp.toSec() > 0 && imu_orientation.coeffs().norm() > 1e-4) {
                     // check the IMU orientation is valid
                     // and use it to update the propagated state orientation
-                    if (propagated_state.orientation.coeffs().norm() < 1e-4) {
-                        ROS_WARN("IMU orientation is zero, using last quaternion instead.");
-                        propagated_state.orientation = state_window_.back().orientation;
-                    }
-                    propagated_state.orientation = Eigen::Quaterniond(
-                        closest_imu.orientation.w, closest_imu.orientation.x, 
-                        closest_imu.orientation.y, closest_imu.orientation.z).normalized();
+                    propagated_state.orientation = imu_orientation.normalized();
                 }
                 else{
-                    propagated_state.orientation = state_window_.back().orientation;
+                    //find out the orientation change from last keyframe to this new one
+                    std::pair<double, double> key(state_window_.back().timestamp, gps.timestamp);
+                    if (preintegration_map_test.find(key) != preintegration_map_test.end()) {
+                        Eigen::Quaterniond delta_orientation = preintegration_map_test[key].getDeltaGamma();
+                        ROS_INFO("Delta Gamma found for keyframe propagation: %.4f, %.4f", 
+                                 state_window_.back().timestamp, gps.timestamp);
+                        ROS_INFO("Delta Orientation: %.4f, %.4f, %.4f, %.4f", 
+                                 delta_orientation.x(), delta_orientation.y(), delta_orientation.z(), delta_orientation.w());
+                        propagated_state.orientation = propagated_state.orientation * delta_orientation;
+                        propagated_state.orientation.normalize();
+                    } else {
+                        propagated_state.orientation = state_window_.back().orientation.normalized();
+                    }
+                    
                 }
-                propagated_state.orientation = state_window_.back().orientation;
             }
             if (use_gps_velocity_ && gps.velocity_valid) {
                 propagated_state.velocity = gps.velocity;
@@ -2661,7 +2664,7 @@ private:
 
             // --- Manage Pre-integration and State Window ---
             // Finalize the pre-integration measurement between the last keyframe and this new one.
-            performPreintegrationBetweenKeyframes_(state_window_.back().timestamp, gps.timestamp);
+            // performPreintegrationBetweenKeyframes_(state_window_.back().timestamp, gps.timestamp);
             
             // If the window is full, marginalize the oldest state.
             if (state_window_.size() >= optimization_window_size_) {
@@ -4122,7 +4125,12 @@ private:
                     // --- A. Add GPS Position Factor with Dynamic Noise ---
                     if (matching_gps_meas->position_valid) {
                         Eigen::Vector3d position_noise_std;
-                        if (matching_gps_meas->position_std_dev.norm() > 1e-4) {
+                        if (matching_gps_meas->position_std_dev.norm() > 1e-8) {
+                            // 
+                            ROS_INFO("Using dynamic GPS position noise: %.3f, %.3f, %.3f",
+                                    matching_gps_meas->position_std_dev.x(),
+                                    matching_gps_meas->position_std_dev.y(),
+                                    matching_gps_meas->position_std_dev.z());
                             position_noise_std = matching_gps_meas->position_std_dev;
                         } else {
                             position_noise_std.setConstant(gps_position_noise_); 
@@ -4466,16 +4474,16 @@ private:
                         variables[i].bias[3], variables[i].bias[4], variables[i].bias[5]);
                     
                     // Ensure biases stay within reasonable limits
-                    // clampBiases(new_acc_bias, new_gyro_bias);
+                    clampBiases(new_acc_bias, new_gyro_bias);
 
                     // check the difference of new and old biases
                     double acc_bias_diff = (new_acc_bias - state_window_[i].acc_bias).norm();
                     double gyro_bias_diff = (new_gyro_bias - state_window_[i].gyro_bias).norm();
 
                     // If the difference is too large, repropagate the preintegration
-                    if (acc_bias_diff > 0.0005 || gyro_bias_diff > 0.0005) {
-                        ROS_WARN("Large bias difference detected: acc [%.3f, %.3f, %.3f], gyro [%.3f, %.3f, %.3f]",
-                            acc_bias_diff, gyro_bias_diff);
+                    if (acc_bias_diff > 0.001 || gyro_bias_diff > 0.001) {
+                        // ROS_WARN("Large bias difference detected: acc [%.3f, %.3f, %.3f], gyro [%.3f, %.3f, %.3f]",
+                        //     acc_bias_diff, gyro_bias_diff);
 
                         std::pair<double, double> key(state_window_[i].timestamp, state_window_[i+1].timestamp);
                         // repropagate calculating the preintegration
