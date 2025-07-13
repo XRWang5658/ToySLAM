@@ -2025,8 +2025,6 @@ static int relpos(rtk_t *rtk, const obsd_t *obs, int nu, int nr,
     }
 
     pub_rtkpos_odometry_solution.publish(odometry);
-
-    pub_rtkpos_odometry_solution.publish(odometry);
     
     free(rs); free(dts); free(var); free(y); free(e); free(azel);
     free(xp); free(Pp);  free(xa);  free(v); free(H); free(R); free(bias);

@@ -31,7 +31,7 @@ int main(int argc, char **argv)
 	ROS_INFO("\033[1;32m----> gnss_preprocessor Started.\033[0m");
 
 	/* get setup parameters */
-	int mode, nf, soltype;
+	int mode, nf, soltype, dynamics;
 	std::string roverMeasureFile, baseMeasureFile, EmpFile;
 	std::string out_folder;
 	nh.param("mode",   mode, 2);
@@ -45,6 +45,7 @@ int main(int argc, char **argv)
     ros::param::get("nf", nf);
     ros::param::get("mode", mode);
     ros::param::get("soltype", soltype);
+	ros::param::get("dynamics", dynamics);
 
 //    std::cout << "roverMeasureFile: " << roverMeasureFile << std::endl;
 //    std::cout << "baseMeasureFile: " << baseMeasureFile << std::endl;
@@ -79,6 +80,7 @@ int main(int argc, char **argv)
 	prcopt.navsys = SYS_ALL;              // use all satellites system
 	prcopt.nf = nf;						// frequency (1:L1,2:L1+L2,3:L1+L2+L5) 
 	prcopt.soltype = soltype;					// 0:forward,1:backward,2:combined
+	prcopt.dynamics = dynamics;			// dynammic mode (0:off,1:on)
 	prcopt.elmin = 15.0*D2R;				// elevation mask (rad)
 	prcopt.tidecorr = 1;					// earth tide correction (0:off,1-:on)
 	prcopt.posopt[4] = 0;               // use RAIM FDE (qmo)  1

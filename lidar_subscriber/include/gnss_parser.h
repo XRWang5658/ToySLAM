@@ -31,8 +31,8 @@ struct GnssMeasurement {
     Eigen::Vector3d position = Eigen::Vector3d::Zero();
     Eigen::Vector3d velocity = Eigen::Vector3d::Zero();
     Eigen::Quaterniond orientation = Eigen::Quaterniond::Identity();
-    Eigen::Vector3d position_std_dev = Eigen::Vector3d::Zero();
-    Eigen::Vector3d velocity_std_dev = Eigen::Vector3d::Zero();
+    Eigen::Matrix3d position_covariance = Eigen::Matrix3d::Zero();
+    Eigen::Matrix3d velocity_covariance = Eigen::Matrix3d::Zero();
     Eigen::Vector3d orientation_std_dev_rpy = Eigen::Vector3d::Zero();
     bool position_valid = false;
     bool velocity_valid = false;
@@ -106,10 +106,18 @@ public:
         }
         meas.position = convertGpsToEnu(msg->latitude, msg->longitude, msg->altitude);
         meas.position_valid = true;
-        meas.position_std_dev << msg->h_acc, msg->h_acc, msg->v_acc;
+        meas.position_covariance.setZero();
+        meas.position_covariance(0, 0) = msg->h_acc * msg->h_acc; // East
+        meas.position_covariance(1, 1) = msg->h_acc * msg->h_acc; // North
+        meas.position_covariance(2, 2) = msg->v_acc * msg->v_acc; // Up
 
         meas.velocity = Eigen::Vector3d(msg->vel_e, msg->vel_n, -msg->vel_d);
-        meas.velocity_std_dev << msg->vel_acc, msg->vel_acc, msg->vel_acc;
+        meas.velocity_valid = true;
+        // MODIFIED: 从标准差构建对角协方差矩阵
+        meas.velocity_covariance.setZero();
+        meas.velocity_covariance(0, 0) = msg->vel_acc * msg->vel_acc; // East
+        meas.velocity_covariance(1, 1) = msg->vel_acc * msg->vel_acc; // North
+        meas.velocity_covariance(2, 2) = msg->vel_acc * msg->vel_acc; // Up
         meas.velocity_valid = true;
         meas.orientation_valid = false;
         return meas;
@@ -129,15 +137,24 @@ public:
         }
         meas.position = convertGpsToEnu(msg->latitude, msg->longitude, msg->altitude);
         meas.position_valid = true;
-        meas.position_std_dev << msg->longitude_std, msg->latitude_std, msg->altitude_std;
+        meas.position_covariance.setZero();
+        meas.position_covariance(0, 0) = msg->longitude_std * msg->longitude_std;
+        meas.position_covariance(1, 1) = msg->latitude_std * msg->latitude_std;
+        meas.position_covariance(2, 2) = msg->altitude_std * msg->altitude_std;
 
         Eigen::Vector3d body_velocity_rfu(msg->east_velocity, msg->north_velocity, msg->up_velocity);
         meas.velocity = convertRfuToEnu(body_velocity_rfu, msg->roll, msg->pitch, msg->azimuth);
         meas.velocity_valid = true;
-        meas.velocity_std_dev << msg->east_velocity_std, msg->north_velocity_std, msg->up_velocity_std;
+        meas.velocity_covariance.setZero();
+        meas.velocity_covariance(0, 0) = msg->east_velocity_std * msg->east_velocity_std;
+        meas.velocity_covariance(1, 1) = msg->north_velocity_std * msg->north_velocity_std;
+        meas.velocity_covariance(2, 2) = msg->up_velocity_std * msg->up_velocity_std;
 
         // ... (姿态和姿态不确定性的转换)
-        meas.orientation_valid = false;
+        meas.orientation_valid = true;
+        // meas.orientation = Eigen::Quaterniond(
+        //     msg->orientation.w, msg->orientation.x, msg->orientation.y, msg->orientation.z);
+        
         
         return meas;
     }
@@ -191,25 +208,25 @@ public:
         // --- 协方差转换 ---
         Eigen::Matrix3d R = m_gnss_tools_.ecef2enuRotation(this->enu_ref_);
 
-        Eigen::Matrix3d pose_cov_ecef = Eigen::Matrix3d::Zero();
-        pose_cov_ecef(0, 0) = msg->pose.covariance[0];
-        pose_cov_ecef(1, 1) = msg->pose.covariance[7];
-        pose_cov_ecef(2, 2) = msg->pose.covariance[14];
+        // nav_msgs/Odometry 的协方差是 6x6 row-major 矩阵.
+        // 位置部分是 [0, 1, 2] 行/列.
+        Eigen::Matrix3d pose_cov_ecef;
+        pose_cov_ecef(0,0) = msg->pose.covariance[0];  pose_cov_ecef(0,1) = msg->pose.covariance[1];  pose_cov_ecef(0,2) = msg->pose.covariance[2];
+        pose_cov_ecef(1,0) = msg->pose.covariance[6];  pose_cov_ecef(1,1) = msg->pose.covariance[7];  pose_cov_ecef(1,2) = msg->pose.covariance[8];
+        pose_cov_ecef(2,0) = msg->pose.covariance[12]; pose_cov_ecef(2,1) = msg->pose.covariance[13]; pose_cov_ecef(2,2) = msg->pose.covariance[14];
         
-        Eigen::Matrix3d pose_cov_enu = R * pose_cov_ecef * R.transpose();
-        meas.position_std_dev << std::sqrt(pose_cov_enu(0, 0)),
-                                 std::sqrt(pose_cov_enu(1, 1)),
-                                 std::sqrt(pose_cov_enu(2, 2));
+        // MODIFIED: 直接存储旋转后的完整协方差矩阵
+        meas.position_covariance = R * pose_cov_ecef * R.transpose() *1000;
 
-        Eigen::Matrix3d vel_cov_ecef = Eigen::Matrix3d::Zero();
-        vel_cov_ecef(0, 0) = msg->twist.covariance[0];
-        vel_cov_ecef(1, 1) = msg->twist.covariance[7];
-        vel_cov_ecef(2, 2) = msg->twist.covariance[14];
-
-        Eigen::Matrix3d vel_cov_enu = R * vel_cov_ecef * R.transpose();
-        meas.velocity_std_dev << std::sqrt(vel_cov_enu(0, 0)),
-                                 std::sqrt(vel_cov_enu(1, 1)),
-                                 std::sqrt(vel_cov_enu(2, 2));
+        // MODIFIED: 从ROS消息中提取完整的3x3速度协方差
+        // 速度部分是 [0, 1, 2] 行/列，在 twist.covariance 中
+        Eigen::Matrix3d vel_cov_ecef;
+        vel_cov_ecef(0,0) = msg->twist.covariance[0];  vel_cov_ecef(0,1) = msg->twist.covariance[1];  vel_cov_ecef(0,2) = msg->twist.covariance[2];
+        vel_cov_ecef(1,0) = msg->twist.covariance[6];  vel_cov_ecef(1,1) = msg->twist.covariance[7];  vel_cov_ecef(1,2) = msg->twist.covariance[8];
+        vel_cov_ecef(2,0) = msg->twist.covariance[12]; vel_cov_ecef(2,1) = msg->twist.covariance[13]; vel_cov_ecef(2,2) = msg->twist.covariance[14];
+        
+        // MODIFIED: 直接存储旋转后的完整协方差矩阵
+        meas.velocity_covariance = R * vel_cov_ecef * R.transpose();
 
         return meas;
     }
