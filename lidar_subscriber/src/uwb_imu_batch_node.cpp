@@ -450,47 +450,74 @@ private:
 class GpsPositionFactor {
 public:
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
-    
-    GpsPositionFactor(const Eigen::Vector3d& measured_position, const Eigen::Vector3d& std_dev)
-        : measured_position_(measured_position), std_dev_(std_dev) {
-        // Ensure std_dev is not zero to avoid division by zero
-        for (int i = 0; i < 3; ++i) {
-            if (std_dev_(i) < 1e-6) std_dev_(i) = 1e-6;
+
+    // MODIFIED: Constructor now accepts Eigen::Matrix3d for covariance
+    GpsPositionFactor(const Eigen::Vector3d& measured_position, const Eigen::Matrix3d& covariance)
+        : measured_position_(measured_position) {
+        
+        // Compute the square root of the information matrix (L^T)
+        // 1. Information = Covariance⁻¹
+        Eigen::Matrix3d information_matrix = covariance.inverse();
+        
+        // 2. Decompose Information = L * Lᵀ (Cholesky decomposition)
+        Eigen::LLT<Eigen::Matrix3d> llt(information_matrix);
+
+        // Handle cases where covariance is not positive definite (e.g., due to numerical issues)
+        if (llt.info() == Eigen::NumericalIssue) {
+            // Fallback to a matrix with very low weight (high uncertainty)
+            sqrt_information_transpose_ = Eigen::Matrix3d::Identity() * 1e-6; 
+        } else {
+            // 3. We need Lᵀ to pre-multiply the error vector.
+            // llt.matrixL() returns L, so we store its transpose.
+            sqrt_information_transpose_ = llt.matrixL().transpose();
         }
     }
 
     template <typename T>
     bool operator()(const T* const pose, T* residuals) const {
+        // Extract position from the pose block (assuming first 3 elements are position x, y, z)
         Eigen::Map<const Eigen::Matrix<T, 3, 1>> position(pose);
         
-        // Compute weighted residuals for each axis
-        residuals[0] = (position[0] - T(measured_position_[0])) / T(std_dev_[0]);
-        residuals[1] = (position[1] - T(measured_position_[1])) / T(std_dev_[1]);
-        residuals[2] = (position[2] - T(measured_position_[2])) / T(std_dev_[2]);
+        // Compute the error vector e = (predicted - measured)
+        Eigen::Matrix<T, 3, 1> error = position - measured_position_.template cast<T>();
+        
+        // Map the residuals array to an Eigen vector
+        Eigen::Map<Eigen::Matrix<T, 3, 1>> residuals_map(residuals);
+        
+        // MODIFIED: Compute the whitened residuals: r = Lᵀ * e
+        // This correctly incorporates the full covariance, including off-diagonal terms.
+        residuals_map = sqrt_information_transpose_.template cast<T>() * error;
         
         return true;
     }
     
-    // Create function now accepts Eigen::Vector3d for standard deviation
-    static ceres::CostFunction* Create(const Eigen::Vector3d& measured_position, const Eigen::Vector3d& std_dev) {
+    // MODIFIED: Create function now accepts Eigen::Matrix3d for covariance
+    static ceres::CostFunction* Create(const Eigen::Vector3d& measured_position, const Eigen::Matrix3d& covariance) {
         return new ceres::AutoDiffCostFunction<GpsPositionFactor, 3, 7>(
-            new GpsPositionFactor(measured_position, std_dev));
+            new GpsPositionFactor(measured_position, covariance));
     }
     
 private:
     const Eigen::Vector3d measured_position_;
-    Eigen::Vector3d std_dev_;
+    // Stores Lᵀ from the Cholesky decomposition of the information matrix
+    Eigen::Matrix3d sqrt_information_transpose_; 
 };
 
-// GPS velocity factor for Ceres
 class GpsVelocityFactor {
 public:
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
     
-    GpsVelocityFactor(const Eigen::Vector3d& measured_velocity, const Eigen::Vector3d& std_dev)
-        : measured_velocity_(measured_velocity), std_dev_(std_dev) {
-        for (int i = 0; i < 3; ++i) {
-            if (std_dev_(i) < 1e-6) std_dev_(i) = 1e-6;
+    // MODIFIED: Constructor now accepts Eigen::Matrix3d for covariance
+    GpsVelocityFactor(const Eigen::Vector3d& measured_velocity, const Eigen::Matrix3d& covariance)
+        : measured_velocity_(measured_velocity) {
+
+        Eigen::Matrix3d information_matrix = covariance.inverse();
+        Eigen::LLT<Eigen::Matrix3d> llt(information_matrix);
+        
+        if (llt.info() == Eigen::NumericalIssue) {
+            sqrt_information_transpose_ = Eigen::Matrix3d::Identity() * 1e-6;
+        } else {
+            sqrt_information_transpose_ = llt.matrixL().transpose();
         }
     }
     
@@ -498,21 +525,25 @@ public:
     bool operator()(const T* const velocity, T* residuals) const {
         Eigen::Map<const Eigen::Matrix<T, 3, 1>> vel(velocity);
         
-        residuals[0] = (vel[0] - T(measured_velocity_[0])) / T(std_dev_[0]);
-        residuals[1] = (vel[1] - T(measured_velocity_[1])) / T(std_dev_[1]);
-        residuals[2] = (vel[2] - T(measured_velocity_[2])) / T(std_dev_[2]);
+        Eigen::Matrix<T, 3, 1> error = vel - measured_velocity_.template cast<T>();
+        
+        Eigen::Map<Eigen::Matrix<T, 3, 1>> residuals_map(residuals);
+        
+        // MODIFIED: Compute the whitened residuals: r = Lᵀ * e
+        residuals_map = sqrt_information_transpose_.template cast<T>() * error;
         
         return true;
     }
     
-    static ceres::CostFunction* Create(const Eigen::Vector3d& measured_velocity, const Eigen::Vector3d& std_dev) {
+    // MODIFIED: Create function now accepts Eigen::Matrix3d for covariance
+    static ceres::CostFunction* Create(const Eigen::Vector3d& measured_velocity, const Eigen::Matrix3d& covariance) {
         return new ceres::AutoDiffCostFunction<GpsVelocityFactor, 3, 3>(
-            new GpsVelocityFactor(measured_velocity, std_dev));
+            new GpsVelocityFactor(measured_velocity, covariance));
     }
     
 private:
     const Eigen::Vector3d measured_velocity_;
-    Eigen::Vector3d std_dev_;
+    Eigen::Matrix3d sqrt_information_transpose_;
 };
 
 // ==================== MARGINALIZATION CLASSES ====================
@@ -2621,7 +2652,7 @@ private:
             // 2. Update the propagated state with the new, more accurate GNSS data.
             // This effectively "corrects" the IMU-only prediction.
             if (gps.position_valid) {
-                propagated_state.position = gps.position;
+                propagated_state.position = (gps.position + propagated_state.position) / 2.0; // Average with IMU prediction   
             }
             if (use_gps_orientation_as_initial_ && gps.orientation_valid) {
                 propagated_state.orientation = gps.orientation.normalized();
@@ -2655,7 +2686,7 @@ private:
                 }
             }
             if (use_gps_velocity_ && gps.velocity_valid) {
-                propagated_state.velocity = gps.velocity;
+                propagated_state.velocity = (gps.velocity + propagated_state.velocity)/2; // Average with IMU prediction
             }
 
             // The biases are carried over from the previous state. The optimizer will adjust them.
@@ -3394,15 +3425,17 @@ private:
                         if (std::abs(gps.timestamp - oldest_state.timestamp) < 0.05) {
                             // --- A. 添加 GPS 位置因子 (保留) ---
                             if (gps.position_valid) {
-                                Eigen::Vector3d position_noise_std;
-                                if (gps.position_std_dev.norm() > 1e-4) {
-                                    position_noise_std = gps.position_std_dev;
+                                Eigen::Matrix3d position_noise_cov;
+                                if (gps.position_covariance.norm() > 1e-8) {
+                                    position_noise_cov = gps.position_covariance;
                                 } else {
-                                    position_noise_std.setConstant(gps_position_noise_); // Fallback
+                                    double var = gps_position_noise_ * gps_position_noise_;
+                                    position_noise_cov = Eigen::Matrix3d::Identity() * var; // Fallback
                                 }
-
+                                ROS_INFO("Marginalizing GPS position at t=%.3f with covariance trace_sqrt=%.3f",
+                                gps.timestamp, std::sqrt(position_noise_cov.trace()));
                                 ceres::CostFunction* gps_factor = GpsPositionFactor::Create(
-                                    gps.position, position_noise_std);
+                                    gps.position, position_noise_cov);
                                 
                                 std::vector<double*> parameter_blocks = {pose_param1};
                                 std::vector<int> drop_set = {0}; // Drop the pose parameter
@@ -3413,20 +3446,22 @@ private:
                             
                             // --- B. 添加 GPS 速度因子 (保留) ---
                             if (use_gps_velocity_ && gps.velocity_valid) {
-                                Eigen::Vector3d velocity_noise_std;
-                                if (gps.velocity_std_dev.norm() > 1e-4) {
-                                    velocity_noise_std = gps.velocity_std_dev;
+                                Eigen::Matrix3d velocity_noise_cov;
+                                if (gps.velocity_covariance.norm() > 1e-8) {
+                                    velocity_noise_cov = gps.velocity_covariance;
                                 } else {
-                                    velocity_noise_std.setConstant(gps_velocity_noise_); // Fallback
+                                    double var = gps_velocity_noise_ * gps_velocity_noise_;
+                                    velocity_noise_cov = Eigen::Matrix3d::Identity() * var;
                                 }
-
+                                ROS_INFO("Marginalizing GPS velocity at t=%.3f with covariance trace_sqrt=%.3f",
+                                    gps.timestamp, std::sqrt(velocity_noise_cov.trace()));
                                 ceres::CostFunction* gps_vel_factor = GpsVelocityFactor::Create(
-                                    gps.velocity, velocity_noise_std);
+                                    gps.velocity, velocity_noise_cov);
                                 
                                 std::vector<double*> vel_parameter_blocks = {vel_param1};
                                 std::vector<int> vel_drop_set = {0}; // Drop the velocity parameter
                                 auto* vel_residual_info = new ResidualBlockInfo(
-                                    gps_vel_factor, nullptr, vel_parameter_blocks, vel_drop_set);
+                                    gps_vel_factor,  nullptr, vel_parameter_blocks, vel_drop_set);
                                 marginalization_info->addResidualBlockInfo(vel_residual_info);
                             }
                             break;
@@ -4124,39 +4159,64 @@ private:
                     
                     // --- A. Add GPS Position Factor with Dynamic Noise ---
                     if (matching_gps_meas->position_valid) {
-                        Eigen::Vector3d position_noise_std;
-                        if (matching_gps_meas->position_std_dev.norm() > 1e-8) {
-                            // 
-                            ROS_INFO("Using dynamic GPS position noise: %.3f, %.3f, %.3f",
-                                    matching_gps_meas->position_std_dev.x(),
-                                    matching_gps_meas->position_std_dev.y(),
-                                    matching_gps_meas->position_std_dev.z());
-                            position_noise_std = matching_gps_meas->position_std_dev;
+                        Eigen::Matrix3d position_noise_cov;
+                        if (matching_gps_meas->position_covariance.norm() > 1e-8) {
+                            position_noise_cov = matching_gps_meas->position_covariance;
+                            ROS_INFO("Using dynamic GPS position covariance with trace_sqrt=%.3f for keyframe %zu",
+                                    std::sqrt(position_noise_cov.trace()), i);
                         } else {
-                            position_noise_std.setConstant(gps_position_noise_); 
+                            // Fallback: Create a diagonal covariance matrix from the scalar noise parameter.
+                            double var = gps_position_noise_ * gps_position_noise_;
+                            position_noise_cov = Eigen::Matrix3d::Identity() * var;
+                            ROS_INFO("Using fallback GPS position covariance with trace_sqrt=%.3f for keyframe %zu",
+                                    std::sqrt(position_noise_cov.trace()), i);
                         }
-                        
+                        // print the given gps position
+                        ROS_INFO("GPS Position for keyframe %zu: [%.3f, %.3f, %.3f]",
+                                i, matching_gps_meas->position.x(), 
+                                matching_gps_meas->position.y(), 
+                                matching_gps_meas->position.z());
                         ceres::CostFunction* gps_pos_factor = GpsPositionFactor::Create(
                             matching_gps_meas->position, 
-                            position_noise_std
+                            position_noise_cov
                         );
-                        problem.AddResidualBlock(gps_pos_factor, new ceres::HuberLoss(0.1), variables[i].pose);
+                        problem.AddResidualBlock(gps_pos_factor, new ceres::HuberLoss(1.0), variables[i].pose);
+
                     }
 
                     // --- B. Add GPS Velocity Factor with Dynamic Noise ---
                     if (use_gps_velocity_ && matching_gps_meas->velocity_valid) {
-                        Eigen::Vector3d velocity_noise_std;
-                        if (matching_gps_meas->velocity_std_dev.norm() > 1e-4) {
-                            velocity_noise_std = matching_gps_meas->velocity_std_dev;
+                        Eigen::Matrix3d velocity_noise_cov;
+                        if (matching_gps_meas->velocity_covariance.norm() > 1e-8) {
+                            velocity_noise_cov = matching_gps_meas->velocity_covariance;
+                            ROS_INFO("Using dynamic GPS velocity covariance with trace_sqrt=%.3f for keyframe %zu",
+                                    std::sqrt(velocity_noise_cov.trace()), i);
                         } else {
-                            velocity_noise_std.setConstant(gps_velocity_noise_);
+                            // Fallback: Create a diagonal covariance matrix.
+                            double var = gps_velocity_noise_ * gps_velocity_noise_;
+                            velocity_noise_cov = Eigen::Matrix3d::Identity() * var;
+                            ROS_INFO("Using fallback GPS velocity covariance with trace_sqrt=%.3f for keyframe %zu",
+                                    std::sqrt(velocity_noise_cov.trace()), i);
                         }
                         
                         ceres::CostFunction* gps_vel_factor = GpsVelocityFactor::Create(
                             matching_gps_meas->velocity, 
-                            velocity_noise_std
+                            velocity_noise_cov
                         );
-                        problem.AddResidualBlock(gps_vel_factor, nullptr, variables[i].velocity);
+
+                        //print the given gps velocity
+                        ROS_INFO("GPS Velocity for keyframe %zu: [%.3f, %.3f, %.3f]",
+                                i, matching_gps_meas->velocity.x(), 
+                                matching_gps_meas->velocity.y(), 
+                                matching_gps_meas->velocity.z());
+                        // NOTE: Using a robust loss function (like HuberLoss) for velocity can also be beneficial.
+                        // For now, keeping it as nullptr as in your original code.
+                        problem.AddResidualBlock(gps_vel_factor, new ceres::HuberLoss(1.0), variables[i].velocity);
+
+                        // // evaluate the residual before optimization
+                        // Eigen::Vector3d residual = (matching_gps_meas->velocity - variables[i].velocity)/ velocity_noise_std;
+                        // ROS_INFO("GPS Velocity Residual for keyframe %zu: [%.3f, %.3f, %.3f]",
+                        //         i, residual.x(), residual.y(), residual.z());
                     }
 
                 }
@@ -4481,17 +4541,17 @@ private:
                     double gyro_bias_diff = (new_gyro_bias - state_window_[i].gyro_bias).norm();
 
                     // If the difference is too large, repropagate the preintegration
-                    if (acc_bias_diff > 0.001 || gyro_bias_diff > 0.001) {
-                        // ROS_WARN("Large bias difference detected: acc [%.3f, %.3f, %.3f], gyro [%.3f, %.3f, %.3f]",
-                        //     acc_bias_diff, gyro_bias_diff);
+                    // if (acc_bias_diff > 0.001 || gyro_bias_diff > 0.001) {
+                    //     // ROS_WARN("Large bias difference detected: acc [%.3f, %.3f, %.3f], gyro [%.3f, %.3f, %.3f]",
+                    //     //     acc_bias_diff, gyro_bias_diff);
 
-                        std::pair<double, double> key(state_window_[i].timestamp, state_window_[i+1].timestamp);
-                        // repropagate calculating the preintegration
-                        if (preintegration_map_test.find(key) != preintegration_map_test.end()) {
-                            auto& preint = preintegration_map_test[key];
-                            preint.repropagate(new_acc_bias, new_gyro_bias);
-                        }
-                    }
+                    //     std::pair<double, double> key(state_window_[i].timestamp, state_window_[i+1].timestamp);
+                    //     // repropagate calculating the preintegration
+                    //     if (preintegration_map_test.find(key) != preintegration_map_test.end()) {
+                    //         auto& preint = preintegration_map_test[key];
+                    //         preint.repropagate(new_acc_bias, new_gyro_bias);
+                    //     }
+                    // }
                     // Clamp biases to ensure they are within reasonable limits
 
 
