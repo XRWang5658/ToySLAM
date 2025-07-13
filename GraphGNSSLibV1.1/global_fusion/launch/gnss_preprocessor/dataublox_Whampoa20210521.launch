@@ -8,6 +8,9 @@ This data is collected near KLT, sparse area  -->
     <param name="soltype"  type="int" value="0" />
     <param name="ts_time"  type="int" value="1621578524" />
     <param name="te_time"  type="int" value="1621580061" />
+    
+    <!-- use the dynamic mode, 0: static, 1: dynamic -->
+    <param name="dynamics" type="int" value="1" />
 
     <!-- path of dataset -->
     <param name="roverMeasureFile" type="string" value="$(find global_fusion)/dataset/urbannavWhampoa/20210521.medium-urban.whampoa.ublox.f9p.obs" />

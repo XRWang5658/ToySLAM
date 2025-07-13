@@ -31,10 +31,11 @@ lidar_subscriber/launch/uwb_imu_batch.launch
 lidar_subscriber/CMakeLists.txt
 lidar_subscriber/CMakeLists.txt
 lidar_subscriber/launch/uwb_imu_batch.launch
-data/*
 helper_scripts/test.py
 lidar_subscriber/rviz/gps_trajectory.rviz
 CMakeLists.txt
 lidar_subscriber/launch/uwb_imu_batch.launch
 GraphGNSSLibV1.1/global_fusion/dataset/urbannavWhampoa/rtklibResult.pos
+lidar_subscriber/rviz/gps_trajectory.rviz
+lidar_subscriber/launch/ublox_whampoa.launch
 lidar_subscriber/rviz/gps_trajectory.rviz
