@@ -1329,6 +1329,12 @@ public:
         // Frame IDs
         private_nh.param<std::string>("world_frame_id", world_frame_id_, "map");
         private_nh.param<std::string>("body_frame_id", body_frame_id_, "base_link");
+
+        private_nh.param<bool>("enable_consistency_check", enable_consistency_check_, true);
+        private_nh.param<double>("nis_threshold_position", nis_threshold_position_, 11.345); // 卡方, 3 DoF, 95%
+        private_nh.param<double>("nis_threshold_velocity", nis_threshold_velocity_, 11.345); // 卡方, 3 DoF, 95%
+        private_nh.param<double>("max_covariance_scale_factor", max_covariance_scale_factor_, 100000.0);
+        private_nh.param<int>("initial_grace_epochs", initial_grace_epochs_, 50);
         
         private_nh.param<double>("optimization_frequency", optimization_frequency_, 10.0);
         private_nh.param<double>("imu_buffer_time_length", imu_buffer_time_length_, 10.0);
@@ -1765,6 +1771,12 @@ private:
         Eigen::Vector3d acc_bias;
         Eigen::Vector3d gyro_bias;
         double timestamp;
+        
+        // variables for gps measurements consistency check
+        bool has_gps_pos_factor = false;
+        bool has_gps_vel_factor = false;
+        Eigen::Matrix3d final_gps_pos_cov;
+        Eigen::Matrix3d final_gps_vel_cov;
     };
 
     // Structure for optimization variables
@@ -1817,6 +1829,13 @@ private:
     Eigen::Vector3d gravity_world_;
 
     double artificial_gps_noise_;
+
+    // variables for consistency check
+    bool enable_consistency_check_;
+    double nis_threshold_position_;
+    double nis_threshold_velocity_;
+    double max_covariance_scale_factor_;
+    int initial_grace_epochs_;
     
     // ==================== VISUALIZATION METHODS ====================
 
@@ -3098,7 +3117,7 @@ private:
             std::lock_guard<std::mutex> lock(data_mutex_);
             // add IMU measurement to the preintegration map
             // extract the data first, including the stamp in seconds, the acceleration, and the angular velocity
-            double unix_timestamp = msg->header.stamp.toSec()+1;
+            double unix_timestamp = msg->header.stamp.toSec();
             Eigen::Vector3d acc(msg->linear_acceleration.x, msg->linear_acceleration.y, msg->linear_acceleration.z);
             Eigen::Vector3d gyro(msg->angular_velocity.x, msg->angular_velocity.y, msg->angular_velocity.z);
             // add the IMU measurement to the preintegration map
@@ -3111,7 +3130,7 @@ private:
             
             // std::lock_guard<std::mutex> lock(data_mutex_);
             
-            double timestamp = msg->header.stamp.toSec()+1;
+            double timestamp = msg->header.stamp.toSec();
             has_imu_data_ = true;
             imu_count++;
             
@@ -3420,51 +3439,44 @@ private:
                 
                 // Add position factor for the oldest state based on fusion mode
                 if (use_gps_instead_of_uwb_) {
-                    // Add GPS position factor
+                    double keyframe_time = oldest_state.timestamp;
+                        std::optional<GnssMeasurement> matching_gps_meas;
                     for (const auto& gps : gps_measurements_) {
-                        if (std::abs(gps.timestamp - oldest_state.timestamp) < 0.05) {
-                            // --- A. 添加 GPS 位置因子 (保留) ---
-                            if (gps.position_valid) {
-                                Eigen::Matrix3d position_noise_cov;
-                                if (gps.position_covariance.norm() > 1e-8) {
-                                    position_noise_cov = gps.position_covariance;
-                                } else {
-                                    double var = gps_position_noise_ * gps_position_noise_;
-                                    position_noise_cov = Eigen::Matrix3d::Identity() * var; // Fallback
-                                }
-                                ROS_INFO("Marginalizing GPS position at t=%.3f with covariance trace_sqrt=%.3f",
-                                gps.timestamp, std::sqrt(position_noise_cov.trace()));
-                                ceres::CostFunction* gps_factor = GpsPositionFactor::Create(
-                                    gps.position, position_noise_cov);
-                                
-                                std::vector<double*> parameter_blocks = {pose_param1};
-                                std::vector<int> drop_set = {0}; // Drop the pose parameter
-                                auto* residual_info = new ResidualBlockInfo(
-                                    gps_factor, nullptr, parameter_blocks, drop_set);
-                                marginalization_info->addResidualBlockInfo(residual_info);
-                            }
-                            
-                            // --- B. 添加 GPS 速度因子 (保留) ---
-                            if (use_gps_velocity_ && gps.velocity_valid) {
-                                Eigen::Matrix3d velocity_noise_cov;
-                                if (gps.velocity_covariance.norm() > 1e-8) {
-                                    velocity_noise_cov = gps.velocity_covariance;
-                                } else {
-                                    double var = gps_velocity_noise_ * gps_velocity_noise_;
-                                    velocity_noise_cov = Eigen::Matrix3d::Identity() * var;
-                                }
-                                ROS_INFO("Marginalizing GPS velocity at t=%.3f with covariance trace_sqrt=%.3f",
-                                    gps.timestamp, std::sqrt(velocity_noise_cov.trace()));
-                                ceres::CostFunction* gps_vel_factor = GpsVelocityFactor::Create(
-                                    gps.velocity, velocity_noise_cov);
-                                
-                                std::vector<double*> vel_parameter_blocks = {vel_param1};
-                                std::vector<int> vel_drop_set = {0}; // Drop the velocity parameter
-                                auto* vel_residual_info = new ResidualBlockInfo(
-                                    gps_vel_factor,  nullptr, vel_parameter_blocks, vel_drop_set);
-                                marginalization_info->addResidualBlockInfo(vel_residual_info);
-                            }
+                        if (std::abs(gps.timestamp - keyframe_time) < 0.05) {
+                            matching_gps_meas = gps;
                             break;
+                        }
+                    }
+                    // Add GPS position factor
+                    if(matching_gps_meas) {
+                        // --- A. 为边缘化问题添加GPS位置因子 ---
+                        // 检查标志位，并使用之前在 optimizeFactorGraph 中存储的、最终使用的协方差
+                        if (oldest_state.has_gps_pos_factor) {
+                            ROS_INFO("Marginalizing GPS position factor with stored covariance.");
+                            ceres::CostFunction* gps_factor = GpsPositionFactor::Create(
+                                matching_gps_meas->position,
+                                oldest_state.final_gps_pos_cov // ★ 使用存储的协方差
+                            );
+                            
+                            std::vector<double*> parameter_blocks = {pose_param1};
+                            std::vector<int> drop_set = {0};
+                            auto* residual_info = new ResidualBlockInfo(gps_factor, nullptr, parameter_blocks, drop_set);
+                            marginalization_info->addResidualBlockInfo(residual_info);
+                        }
+                        
+                        // --- B. 为边缘化问题添加GPS速度因子 ---
+                        // 检查标志位，并使用存储的协方差
+                        if (use_gps_velocity_ && oldest_state.has_gps_vel_factor) {
+                            ROS_INFO("Marginalizing GPS velocity factor with stored covariance.");
+                            ceres::CostFunction* gps_vel_factor = GpsVelocityFactor::Create(
+                                matching_gps_meas->velocity,
+                                oldest_state.final_gps_vel_cov // ★ 使用存储的协方差
+                            );
+                            
+                            std::vector<double*> vel_parameter_blocks = {vel_param1};
+                            std::vector<int> vel_drop_set = {0};
+                            auto* vel_residual_info = new ResidualBlockInfo(gps_vel_factor, nullptr, vel_parameter_blocks, vel_drop_set);
+                            marginalization_info->addResidualBlockInfo(vel_residual_info);
                         }
                     }
                 } else {
@@ -4140,85 +4152,115 @@ private:
             
             // Add position measurements based on fusion mode
             if (use_gps_instead_of_uwb_) {
-                // Add GPS position factors
                 for (size_t i = 0; i < state_window_.size(); ++i) {
                     double keyframe_time = state_window_[i].timestamp;
                     
-                    // Find the corresponding GNSS measurement for this keyframe
+                    // 找到匹配的GPS测量数据
                     std::optional<GnssMeasurement> matching_gps_meas;
                     for (const auto& gps : gps_measurements_) {
-                        if (std::abs(gps.timestamp - keyframe_time) < 0.05) { // 10ms tolerance
+                        if (std::abs(gps.timestamp - keyframe_time) < 0.05) {
                             matching_gps_meas = gps;
                             break;
                         }
                     }
 
                     if (!matching_gps_meas) {
-                        continue; // No matching GPS measurement for this keyframe
+                        continue;
                     }
-                    
-                    // --- A. Add GPS Position Factor with Dynamic Noise ---
+
+                    // 重置当前帧的标志位和协方差
+                    state_window_[i].has_gps_pos_factor = false;
+                    state_window_[i].has_gps_vel_factor = false;
+
+                    double pos_covariance_scale = 1.0;
+                    double vel_covariance_scale = 1.0;
+
+                    // --- 卡方一致性检验 (从第二个关键帧开始) ---
+                    if (enable_consistency_check_ && i > 0 && optimization_count_ > initial_grace_epochs_) {
+                        const auto& prev_state = state_window_[i-1];
+                        const auto& current_meas = *matching_gps_meas;
+
+                        std::pair<double, double> key(prev_state.timestamp, keyframe_time);
+                        if (preintegration_map_test.count(key)) {
+                            const auto& preint = preintegration_map_test.at(key);
+                            double dt = preint.get_sum_dt();
+
+                            State propagated_state = propagateState(prev_state, current_meas.timestamp);
+
+                            // --- 位置检验 ---
+                            if (current_meas.position_valid) {
+                                Eigen::Vector3d predicted_pos = propagated_state.position;
+                                Eigen::Vector3d innovation_pos = current_meas.position - predicted_pos;
+                                Eigen::Matrix3d S_pos = preint.getCovariance().block<3, 3>(0, 0) + current_meas.position_covariance;
+                                double nis_pos = innovation_pos.transpose() * S_pos.inverse() * innovation_pos;
+
+                                if (nis_pos > nis_threshold_position_) {
+                                    pos_covariance_scale = std::min(max_covariance_scale_factor_, nis_pos / 3.0);
+                                    pos_covariance_scale = std::max(1.0, pos_covariance_scale);
+                                    ROS_WARN("GPS position didn't pass consistency check! NIS=%.2f > threshold=%.2f. covariance will be scale %.2f times (frame %zu)",
+                                            nis_pos, nis_threshold_position_, pos_covariance_scale, i);
+                                }
+                            }
+                            
+                            // --- 速度检验 ---
+                            if (use_gps_velocity_ && current_meas.velocity_valid) {
+                                Eigen::Vector3d predicted_vel = propagated_state.velocity;
+                                Eigen::Vector3d innovation_vel = current_meas.velocity - predicted_vel;
+                                Eigen::Matrix3d S_vel = preint.getCovariance().block<3, 3>(6, 6) + current_meas.velocity_covariance;
+                                double nis_vel = innovation_vel.transpose() * S_vel.inverse() * innovation_vel;
+
+                                if (nis_vel > nis_threshold_velocity_) {
+                                    vel_covariance_scale = std::min(max_covariance_scale_factor_, nis_vel / 3.0);
+                                    vel_covariance_scale = std::max(1.0, vel_covariance_scale);
+                                    ROS_WARN("GPS velocity didn't pass consistency check! NIS=%.2f > threshold=%.2f. covariance will be scale %.2f times (frame %zu)",
+                                            nis_vel, nis_threshold_velocity_, vel_covariance_scale, i);
+                                }
+                            }
+                        }
+                    }
+
+                    // --- 添加GPS位置因子 ---
                     if (matching_gps_meas->position_valid) {
-                        Eigen::Matrix3d position_noise_cov;
-                        if (matching_gps_meas->position_covariance.norm() > 1e-8) {
-                            position_noise_cov = matching_gps_meas->position_covariance;
-                            ROS_INFO("Using dynamic GPS position covariance with trace_sqrt=%.3f for keyframe %zu",
-                                    std::sqrt(position_noise_cov.trace()), i);
-                        } else {
-                            // Fallback: Create a diagonal covariance matrix from the scalar noise parameter.
-                            double var = gps_position_noise_ * gps_position_noise_;
-                            position_noise_cov = Eigen::Matrix3d::Identity() * var;
-                            ROS_INFO("Using fallback GPS position covariance with trace_sqrt=%.3f for keyframe %zu",
-                                    std::sqrt(position_noise_cov.trace()), i);
-                        }
-                        // print the given gps position
-                        ROS_INFO("GPS Position for keyframe %zu: [%.3f, %.3f, %.3f]",
-                                i, matching_gps_meas->position.x(), 
-                                matching_gps_meas->position.y(), 
-                                matching_gps_meas->position.z());
-                        ceres::CostFunction* gps_pos_factor = GpsPositionFactor::Create(
-                            matching_gps_meas->position, 
-                            position_noise_cov
-                        );
-                        problem.AddResidualBlock(gps_pos_factor, new ceres::HuberLoss(1.0), variables[i].pose);
-
-                    }
-
-                    // --- B. Add GPS Velocity Factor with Dynamic Noise ---
-                    if (use_gps_velocity_ && matching_gps_meas->velocity_valid) {
-                        Eigen::Matrix3d velocity_noise_cov;
-                        if (matching_gps_meas->velocity_covariance.norm() > 1e-8) {
-                            velocity_noise_cov = matching_gps_meas->velocity_covariance;
-                            ROS_INFO("Using dynamic GPS velocity covariance with trace_sqrt=%.3f for keyframe %zu",
-                                    std::sqrt(velocity_noise_cov.trace()), i);
-                        } else {
-                            // Fallback: Create a diagonal covariance matrix.
-                            double var = gps_velocity_noise_ * gps_velocity_noise_;
-                            velocity_noise_cov = Eigen::Matrix3d::Identity() * var;
-                            ROS_INFO("Using fallback GPS velocity covariance with trace_sqrt=%.3f for keyframe %zu",
-                                    std::sqrt(velocity_noise_cov.trace()), i);
-                        }
+                        Eigen::Matrix3d position_noise_cov = matching_gps_meas->position_covariance.norm() > 1e-8 ?
+                                                            matching_gps_meas->position_covariance :
+                                                            Eigen::Matrix3d::Identity() * gps_position_noise_ * gps_position_noise_;
                         
-                        ceres::CostFunction* gps_vel_factor = GpsVelocityFactor::Create(
-                            matching_gps_meas->velocity, 
-                            velocity_noise_cov
-                        );
+                        position_noise_cov *= pos_covariance_scale; // 应用缩放因子
 
-                        //print the given gps velocity
-                        ROS_INFO("GPS Velocity for keyframe %zu: [%.3f, %.3f, %.3f]",
-                                i, matching_gps_meas->velocity.x(), 
-                                matching_gps_meas->velocity.y(), 
-                                matching_gps_meas->velocity.z());
-                        // NOTE: Using a robust loss function (like HuberLoss) for velocity can also be beneficial.
-                        // For now, keeping it as nullptr as in your original code.
-                        problem.AddResidualBlock(gps_vel_factor, new ceres::HuberLoss(1.0), variables[i].velocity);
+                        const double min_pos_variance = 0.4; // 对应标准差为 0.2米 (20cm)
+                        if (position_noise_cov.trace() < min_pos_variance * 3) {
+                            // 如果协方差矩阵太小，就用设定的下限值来覆盖它
+                            position_noise_cov = Eigen::Matrix3d::Identity() * min_pos_variance;
+                            // ROS_WARN("GPS position covariance is too optimistic. Using floor value (std=%.2f m).", std::sqrt(min_pos_variance));
+                        }
+                        // 【重要】将最终使用的协方差存入State对象，供边缘化使用
+                        state_window_[i].final_gps_pos_cov = position_noise_cov;
+                        state_window_[i].has_gps_pos_factor = true;
 
-                        // // evaluate the residual before optimization
-                        // Eigen::Vector3d residual = (matching_gps_meas->velocity - variables[i].velocity)/ velocity_noise_std;
-                        // ROS_INFO("GPS Velocity Residual for keyframe %zu: [%.3f, %.3f, %.3f]",
-                        //         i, residual.x(), residual.y(), residual.z());
+                        ceres::CostFunction* gps_pos_factor = GpsPositionFactor::Create(matching_gps_meas->position, position_noise_cov);
+                        problem.AddResidualBlock(gps_pos_factor, new ceres::HuberLoss(1.0), variables[i].pose);
                     }
 
+                    // --- 添加GPS速度因子 ---
+                    if (use_gps_velocity_ && matching_gps_meas->velocity_valid) {
+                        Eigen::Matrix3d velocity_noise_cov = matching_gps_meas->velocity_covariance.norm() > 1e-8 ?
+                                                            matching_gps_meas->velocity_covariance :
+                                                            Eigen::Matrix3d::Identity() * gps_velocity_noise_ * gps_velocity_noise_;
+                        
+                        velocity_noise_cov *= vel_covariance_scale; // 应用缩放因子
+
+                        const double min_vel_variance = 0.1; // 对应标准差为 0.1m/s
+                        if (velocity_noise_cov.trace() < min_vel_variance * 3) {
+                            velocity_noise_cov = Eigen::Matrix3d::Identity() * min_vel_variance;
+                            // ROS_WARN("GPS velocity covariance is too optimistic. Using floor value (std=%.2f m/s).", std::sqrt(min_vel_variance));
+                        }
+                        // 【重要】将最终使用的协方差存入State对象，供边缘化使用
+                        state_window_[i].final_gps_vel_cov = velocity_noise_cov;
+                        state_window_[i].has_gps_vel_factor = true;
+                        
+                        ceres::CostFunction* gps_vel_factor = GpsVelocityFactor::Create(matching_gps_meas->velocity, velocity_noise_cov);
+                        problem.AddResidualBlock(gps_vel_factor, new ceres::HuberLoss(1.0), variables[i].velocity);
+                    }
                 }
             }else {
                 // Original UWB position factors
@@ -4352,6 +4394,10 @@ private:
                     //                        variables[i+1].pose, variables[i+1].velocity, variables[i+1].bias);
                     auto& preint = preintegration_map_test[key];
                     ceres::CostFunction* imu_factor_ = new imu_factor(&preint);
+
+                    // ROS_INFO("IMU PREINT NOISE LEVEL: acc, gyro, acc_bias, gyro_bias = %.3f, %.3f, %.3f, %.3f",
+                    //         preint.getAccNoiseSigma(), preint.getGyroNoiseSigma(),
+                    //         preint.getAccBiasWalkSigma(), preint.getGyroBiasWalkSigma());
 
                     problem.AddResidualBlock(imu_factor_, NULL,
                                            variables[i].pose, variables[i].velocity, variables[i].bias,
@@ -4541,17 +4587,17 @@ private:
                     double gyro_bias_diff = (new_gyro_bias - state_window_[i].gyro_bias).norm();
 
                     // If the difference is too large, repropagate the preintegration
-                    // if (acc_bias_diff > 0.001 || gyro_bias_diff > 0.001) {
-                    //     // ROS_WARN("Large bias difference detected: acc [%.3f, %.3f, %.3f], gyro [%.3f, %.3f, %.3f]",
-                    //     //     acc_bias_diff, gyro_bias_diff);
+                    if (acc_bias_diff > 0.0005 || gyro_bias_diff > 0.005) {
+                        // ROS_WARN("Large bias difference detected: acc [%.3f, %.3f, %.3f], gyro [%.3f, %.3f, %.3f]",
+                        //     acc_bias_diff, gyro_bias_diff);
 
-                    //     std::pair<double, double> key(state_window_[i].timestamp, state_window_[i+1].timestamp);
-                    //     // repropagate calculating the preintegration
-                    //     if (preintegration_map_test.find(key) != preintegration_map_test.end()) {
-                    //         auto& preint = preintegration_map_test[key];
-                    //         preint.repropagate(new_acc_bias, new_gyro_bias);
-                    //     }
-                    // }
+                        std::pair<double, double> key(state_window_[i].timestamp, state_window_[i+1].timestamp);
+                        // repropagate calculating the preintegration
+                        if (preintegration_map_test.find(key) != preintegration_map_test.end()) {
+                            auto& preint = preintegration_map_test[key];
+                            preint.repropagate(new_acc_bias, new_gyro_bias);
+                        }
+                    }
                     // Clamp biases to ensure they are within reasonable limits
 
 

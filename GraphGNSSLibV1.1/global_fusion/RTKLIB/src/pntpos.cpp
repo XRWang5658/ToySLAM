@@ -68,6 +68,7 @@ static const char rcsid[]="$Id:$";
 
 ros::Publisher pub_pntpos_odometry;
 ros::Publisher pub_wls_odometry;
+ros::Publisher pub_pntpos_odometry_ECEF;
 
 ros::Publisher pub_gnss_raw;
 ros::Publisher pub_velocity_from_doppler;
@@ -75,8 +76,49 @@ ros::Publisher pub_velocity_from_doppler;
 GNSS_Tools m_GNSS_Tools; // utilities
 double lastGNSSTime = 0;
 
+// To give a unix timestamp for ros message
+// FIXED: Robust GPS to Unix time conversion
+double gpsToUnixTime(uint32_t gps_week, double gps_seconds) {
+    // Debug input parameters
+    ROS_DEBUG("Converting GPS time: week=%u, sec=%.3f", gps_week, gps_seconds);
+    
+    // Detect high-precision time format and scale appropriately
+    if (gps_seconds > 1000000.0) {
+        // Check if it's likely microseconds (common GPS format)
+        if (gps_seconds < 604800000000.0) { // Less than a week in microseconds
+            ROS_INFO_ONCE("Converting GPS time from microseconds format");
+            gps_seconds /= 1000000.0;  // Convert from microseconds to seconds
+        }
+    }
+    
+    // GPS epoch started on January 6, 1980 00:00:00 UTC
+    // Unix epoch started on January 1, 1970 00:00:00 UTC
+    const double GPS_UNIX_OFFSET = 315964800.0; // Seconds between Unix and GPS epochs
+    const double SECONDS_IN_WEEK = 604800.0;
+    const double LEAP_SECONDS = 18.0;
+    
+    // Input validation (after possible scaling)
+    if (gps_week > 4000 || gps_seconds < 0 || gps_seconds >= SECONDS_IN_WEEK) {
+        ROS_WARN("Invalid GPS time (week=%u, sec=%.3f)", gps_week, gps_seconds);
+        return 0;
+    }
+    
+    // Calculate seconds since GPS epoch
+    double gps_time = gps_week * SECONDS_IN_WEEK + gps_seconds;
+    
+    // Convert to Unix time by adding the offset and subtracting leap seconds
+    double unix_time = gps_time + GPS_UNIX_OFFSET - LEAP_SECONDS;
+    
+    // Log successful conversion
+    ROS_DEBUG("GPS time converted: week=%u, sec=%.3f -> unix=%.3f", 
+             gps_week, gps_seconds, unix_time);
+             
+    return unix_time;
+}
+
 extern void pntposRegisterPub(ros::NodeHandle &n)
 {
+    pub_pntpos_odometry_ECEF = n.advertise<nav_msgs::Odometry>("WLS_ECEF", 1000);
     pub_pntpos_odometry = n.advertise<nav_msgs::Odometry>("WLSENURTKLIB", 1000);
     pub_gnss_raw = n.advertise<nlosexclusion::GNSS_Raw_Array>("GNSSPsrCarRov1", 1000);
     pub_wls_odometry = n.advertise<nav_msgs::Odometry>("WLSENUGoGPS", 1000);
@@ -859,6 +901,60 @@ extern int pntpos(const obsd_t *obs, int n, const nav_t *nav,
     }
     
     pub_velocity_from_doppler.publish(odometry);
+    #endif
+
+    #if 1 // added by xiangru, to output the ECEF position & estimated velocity, and the covariance
+        Eigen::Matrix<double, 3, 1> ECEF;
+        ECEF<<sol->rr[0], sol->rr[1], sol->rr[2];
+        // std::cout << "ECEF: " << ECEF << std::endl;
+
+        // velocity in ENU frame
+        Eigen::Matrix<double, 3, 1> ECEF_Vel;
+        ECEF_Vel << sol->rr[3], sol->rr[4], sol->rr[5];
+
+        Eigen::Matrix<double, 3, 1> LLH;
+        LLH = m_GNSS_Tools.ecef2llh(ECEF);
+
+        double unix_time = gpsToUnixTime(current_week, current_tow);
+
+        // create odometry message with time stamp
+        nav_msgs::Odometry odom;
+        odom.header.stamp = ros::Time().fromSec(unix_time);
+        odom.header.frame_id = "map";
+        odom.child_frame_id = "map";
+        odom.pose.pose.position.x = ECEF(0);
+        odom.pose.pose.position.y = ECEF(1);
+        odom.pose.pose.position.z = ECEF(2);
+        odom.twist.twist.linear.x = ECEF_Vel(0);
+        odom.twist.twist.linear.y = ECEF_Vel(1);
+        odom.twist.twist.linear.z = ECEF_Vel(2);
+
+        // get the uncertainty of the position
+        odom.pose.covariance[0] = sol->qr[0];   // Var(x)
+        odom.pose.covariance[7] = sol->qr[1];   // Var(y)
+        odom.pose.covariance[14] = sol->qr[2];  // Var(z)
+        
+        odom.pose.covariance[1] = sol->qr[3];   // Cov(x,y)
+        odom.pose.covariance[6] = sol->qr[3];   // Cov(y,x)
+
+        odom.pose.covariance[2] = sol->qr[5];   // Cov(x,z)
+        odom.pose.covariance[12] = sol->qr[5];  // Cov(z,x)
+
+        odom.pose.covariance[8] = sol->qr[4];   // Cov(y,z)
+        odom.pose.covariance[13] = sol->qr[4];  // Cov(z,y)
+
+
+        // get the uncertainty of doppler velocity
+        Eigen::MatrixXd covarianceMatrix = m_GNSS_Tools.getCovarianceMatrix(
+                                            m_GNSS_Tools.getAllPositions(gnss_data),
+                                            m_GNSS_Tools.getAllMeasurements(gnss_data),
+                                            gnss_data, "WLS");
+
+        odom.twist.covariance[0] = covarianceMatrix(0,0);
+        odom.twist.covariance[7] = covarianceMatrix(1,1);
+        odom.twist.covariance[14] = covarianceMatrix(2,2);
+
+        pub_pntpos_odometry_ECEF.publish(odom);
     #endif
 
     if (azel) {

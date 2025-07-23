@@ -14,8 +14,15 @@
     <arg name="artificial_vel_noise_std" default="0" doc="人工速度噪声标准差 (m/s)" />
 
     <arg name="gps_position_noise" default="1" doc="默认GPS位置噪声 (m)" />
-    <arg name="gps_velocity_noise" default="0.5" doc="默认GPS速度噪声 (m/s)" />
+    <arg name="gps_velocity_noise" default="1" doc="默认GPS速度噪声 (m/s)" />
     <arg name="uwb_position_noise" default="0.1" doc="UWB位置噪声 (m)" />
+
+    <arg name="enable_consistency_check"      default="true"  doc="是否启用基于NIS的卡方一致性检验来动态调整GPS协方差"/>
+    <arg name="initial_grace_epochs"          default="50"    doc="初始宽限期：在前N次优化中不执行一致性检验，以等待零偏收敛"/>
+    <arg name="nis_threshold_position"        default="10000" doc="位置检验的NIS阈值 (卡方分布, 3自由度, 99%置信度)"/>
+    <arg name="nis_threshold_velocity"        default="10000" doc="速度检验的NIS阈值 (卡方分布, 3自由度, 99%置信度)"/>
+    <arg name="max_covariance_scale_factor"   default="1000000.0" doc="当检验失败时，协方差放大的最大倍数，防止协方差爆炸"/>
+
 
 
     <arg name="gravity_magnitude" default="9.785" doc="重力加速度大小 (m/s^2)" />
@@ -128,5 +135,11 @@
         <param name="gps_log_path" value="$(arg gps_log_path)" />
         <param name="gt_log_path" value="$(arg gt_log_path)" />
         <param name="optimized_log_path" value="$(arg optimized_log_path)" />
+
+        <param name="enable_consistency_check" value="$(arg enable_consistency_check)" />
+        <param name="initial_grace_epochs" value="$(arg initial_grace_epochs)" />
+        <param name="nis_threshold_position" value="$(arg nis_threshold_position)" />
+        <param name="nis_threshold_velocity" value="$(arg nis_threshold_velocity)" />
+        <param name="max_covariance_scale_factor" value="$(arg max_covariance_scale_factor)" />
     </node>
 </launch>
