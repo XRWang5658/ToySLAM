@@ -216,7 +216,7 @@ public:
         pose_cov_ecef(2,0) = msg->pose.covariance[12]; pose_cov_ecef(2,1) = msg->pose.covariance[13]; pose_cov_ecef(2,2) = msg->pose.covariance[14];
         
         // MODIFIED: 直接存储旋转后的完整协方差矩阵
-        meas.position_covariance = R * pose_cov_ecef * R.transpose() *1000;
+        meas.position_covariance = R * pose_cov_ecef * R.transpose();
 
         // MODIFIED: 从ROS消息中提取完整的3x3速度协方差
         // 速度部分是 [0, 1, 2] 行/列，在 twist.covariance 中
