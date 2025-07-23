@@ -5,38 +5,35 @@ import os
 import argparse
 import rosbag
 import rospy
-import datetime
+from datetime import datetime, timedelta, timezone
 
 # GPS时间和UTC时间之间的闰秒差。
-# 截至2017年1月，这个值是18。对于大多数应用来说，这是一个足够精确的近似值。
+# 截至2017年1月之后，这个值是18。
 # GPS time is ahead of UTC time.
 LEAP_SECONDS = 18
 
-def gps_to_ros_time(gps_week, gps_milliseconds):
+def gps_to_ros_time(gps_week, gps_seconds):
     """
-    将Novatel消息中的GPS周和周内毫秒转换为rospy.Time对象。
+    将GPS周和周内秒数转换为rospy.Time对象。
     
     Args:
         gps_week (int): GPS周数。
-        gps_milliseconds (int): GPS周内的毫秒数。
+        gps_seconds (float): GPS周内的秒数。
         
     Returns:
         rospy.Time: 转换后的ROS时间对象。
     """
     # GPS的起始时间是 1980年1月6日 00:00:00 UTC
-    gps_epoch = datetime.datetime(1980, 1, 6, 0, 0, 0, tzinfo=datetime.timezone.utc)
-    
-    # 将毫秒转换为秒
-    gps_seconds = gps_milliseconds / 1000.0
+    gps_epoch = datetime(1980, 1, 6, 0, 0, 0, tzinfo=timezone.utc)
     
     # 计算从GPS起始时间到现在的总时间
-    time_since_epoch = datetime.timedelta(weeks=gps_week, seconds=gps_seconds)
+    time_since_epoch = timedelta(weeks=gps_week, seconds=gps_seconds)
     
     # 计算当前的GPS时间点
     current_gps_time = gps_epoch + time_since_epoch
     
     # 从GPS时间中减去闰秒，得到UTC时间
-    current_utc_time = current_gps_time - datetime.timedelta(seconds=LEAP_SECONDS)
+    current_utc_time = current_gps_time - timedelta(seconds=LEAP_SECONDS)
     
     # 将UTC时间转换为Unix时间戳（自1970年1月1日起的秒数）
     unix_timestamp = current_utc_time.timestamp()
@@ -66,22 +63,28 @@ def main():
     with rosbag.Bag(output_bag_path, 'w') as outbag:
         # 使用read_messages()读取消息，它会返回(topic, msg, t)
         for topic, msg, t in rosbag.Bag(input_bag_path).read_messages():
+            new_t = t # 默认使用原始时间戳
+
+            # 新增：处理 gnss_comm/GnssPVTSolnMsg 消息
+            if msg._type == 'gnss_comm/GnssPVTSolnMsg':
+                # 确保消息中的time字段和所需子字段存在
+                if hasattr(msg, 'time') and hasattr(msg.time, 'week') and hasattr(msg.time, 'tow'):
+                    # 'tow' 已经是秒，所以可以直接使用
+                    new_t = gps_to_ros_time(msg.time.week, msg.time.tow)
+            
             # 特殊处理Novatel INSPVAX消息
-            if msg._type == 'novatel_msgs/INSPVAX':
+            elif msg._type == 'novatel_msgs/INSPVAX':
                 # 确保消息头和所需字段存在
                 if hasattr(msg, 'header') and hasattr(msg.header, 'gps_week') and hasattr(msg.header, 'gps_week_seconds'):
-                    # 从GPS时间计算新的时间戳
-                    new_t = gps_to_ros_time(msg.header.gps_week, msg.header.gps_week_seconds)
-                else:
-                    new_t = t # 如果字段缺失，则回退到原始包时间
+                    # 将Novatel的毫秒转换为秒
+                    gps_seconds = msg.header.gps_week_seconds / 1000.0
+                    new_t = gps_to_ros_time(msg.header.gps_week, gps_seconds)
             
             # 处理带有标准ROS头的时间戳
             elif hasattr(msg, 'header') and hasattr(msg.header, 'stamp') and msg.header.stamp.secs != 0:
                 new_t = msg.header.stamp
             
-            # 对于其他所有消息，使用原始的包时间
-            else:
-                new_t = t
+            # 对于其他所有消息，new_t 将保持为原始的包时间 t
 
             outbag.write(topic, msg, new_t)
             msg_count += 1
