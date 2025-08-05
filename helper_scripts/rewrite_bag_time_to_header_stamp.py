@@ -7,91 +7,92 @@ import rosbag
 import rospy
 from datetime import datetime, timedelta, timezone
 
-# GPS时间和UTC时间之间的闰秒差。
-# 截至2017年1月之后，这个值是18。
-# GPS time is ahead of UTC time.
+# GPS time is 18 seconds ahead of UTC (as of 2017)
+# Note: This value may need to be updated if processing data from after the next leap second insertion.
 LEAP_SECONDS = 18
 
 def gps_to_ros_time(gps_week, gps_seconds):
     """
-    将GPS周和周内秒数转换为rospy.Time对象。
-    
-    Args:
-        gps_week (int): GPS周数。
-        gps_seconds (float): GPS周内的秒数。
-        
-    Returns:
-        rospy.Time: 转换后的ROS时间对象。
+    Converts GPS week and seconds of week to a rospy.Time object.
     """
-    # GPS的起始时间是 1980年1月6日 00:00:00 UTC
+    # GPS epoch started at 1980-01-06 00:00:00 UTC
     gps_epoch = datetime(1980, 1, 6, 0, 0, 0, tzinfo=timezone.utc)
     
-    # 计算从GPS起始时间到现在的总时间
+    # Calculate total time since the GPS epoch
     time_since_epoch = timedelta(weeks=gps_week, seconds=gps_seconds)
     
-    # 计算当前的GPS时间点
+    # Current time in the GPS time scale
     current_gps_time = gps_epoch + time_since_epoch
     
-    # 从GPS时间中减去闰秒，得到UTC时间
+    # Subtract leap seconds to get UTC
     current_utc_time = current_gps_time - timedelta(seconds=LEAP_SECONDS)
     
-    # 将UTC时间转换为Unix时间戳（自1970年1月1日起的秒数）
-    unix_timestamp = current_utc_time.timestamp()
-    
-    # 从秒数创建rospy.Time对象
-    return rospy.Time.from_sec(unix_timestamp)
+    # Convert UTC to a Unix timestamp and create a rospy.Time object
+    return rospy.Time.from_sec(current_utc_time.timestamp())
 
 def main():
-    parser = argparse.ArgumentParser(description="根据msg.header.stamp或GPS时间重写rosbag的时间戳。")
-    parser.add_argument('input_bag', help='输入rosbag文件的路径')
-    parser.add_argument('output_bag', help='输出rosbag文件的路径 (如果目录不存在，将会被创建)')
+    parser = argparse.ArgumentParser(description="Rewrites rosbag timestamps based on GPS time within messages.")
+    parser.add_argument('input_bag', help='Path to the input rosbag file.')
+    parser.add_argument('output_bag', help='Path for the output rosbag file.')
     args = parser.parse_args()
 
     input_bag_path = args.input_bag
     output_bag_path = args.output_bag
 
-    # 如果输出目录不存在，则创建它
     output_dir = os.path.dirname(os.path.abspath(output_bag_path))
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
-        print(f"[INFO] 已创建输出目录: {output_dir}")
+        print(f"[INFO] Created output directory: {output_dir}")
 
-    print(f"[INFO] 正在处理输入文件: {input_bag_path}")
+    print(f"[INFO] Processing input file: {input_bag_path}")
     msg_count = 0
     
-    # 重写rosbag
-    with rosbag.Bag(output_bag_path, 'w') as outbag:
-        # 使用read_messages()读取消息，它会返回(topic, msg, t)
-        for topic, msg, t in rosbag.Bag(input_bag_path).read_messages():
-            new_t = t # 默认使用原始时间戳
+    # Message type names to check for (checks the suffix of the full type string)
+    gnss_eph_type_suffix = 'GnssEphemMsg'
+    glonass_eph_type_suffix = 'GnssGloEphemMsg'
+    gnss_meas_type_suffix = 'GnssMeasMsg'
+    # NEW: Define suffix for PVT solution message
+    gnss_pvt_type_suffix = 'GnssPVTSolnMsg'
 
-            # 新增：处理 gnss_comm/GnssPVTSolnMsg 消息
-            if msg._type == 'gnss_comm/GnssPVTSolnMsg':
-                # 确保消息中的time字段和所需子字段存在
-                if hasattr(msg, 'time') and hasattr(msg.time, 'week') and hasattr(msg.time, 'tow'):
-                    # 'tow' 已经是秒，所以可以直接使用
+    with rosbag.Bag(output_bag_path, 'w') as outbag:
+        for topic, msg, t in rosbag.Bag(input_bag_path).read_messages():
+            new_t = t # Default to original timestamp
+
+            # Handle Ephemeris messages (GPS, GLONASS, etc.)
+            if msg._type.endswith(gnss_eph_type_suffix) or msg._type.endswith(glonass_eph_type_suffix):
+                # Access path: msg.toe.week and msg.toe.tow
+                if hasattr(msg, 'toe') and hasattr(msg.toe, 'week') and hasattr(msg.toe, 'tow'):
+                    new_t = gps_to_ros_time(msg.toe.week, msg.toe.tow)
+
+            # Handle GNSS Measurement messages
+            elif msg._type.endswith(gnss_meas_type_suffix):
+                # The timestamp is in the first observation of the 'means' array.
+                # Access path: msg.means[0].time.week and msg.means[0].time.tow
+                if (hasattr(msg, 'meas') and len(msg.meas) > 0 and
+                        hasattr(msg.meas[0], 'time') and 
+                        hasattr(msg.meas[0].time, 'week') and 
+                        hasattr(msg.meas[0].time, 'tow')):
+                    new_t = gps_to_ros_time(msg.meas[0].time.week, msg.meas[0].time.tow)
+            
+            # NEW: Handle GnssPVTSolnMsg
+            # Based on the image, the time fields are directly in the message
+            elif msg._type.endswith(gnss_pvt_type_suffix):
+                if (hasattr(msg, 'time') and
+                    hasattr(msg.time, 'week') and
+                    hasattr(msg.time, 'tow')):
                     new_t = gps_to_ros_time(msg.time.week, msg.time.tow)
-            
-            # 特殊处理Novatel INSPVAX消息
-            elif msg._type == 'novatel_msgs/INSPVAX':
-                # 确保消息头和所需字段存在
-                if hasattr(msg, 'header') and hasattr(msg.header, 'gps_week') and hasattr(msg.header, 'gps_week_seconds'):
-                    # 将Novatel的毫秒转换为秒
-                    gps_seconds = msg.header.gps_week_seconds / 1000.0
-                    new_t = gps_to_ros_time(msg.header.gps_week, gps_seconds)
-            
-            # 处理带有标准ROS头的时间戳
+
+            # Fallback for any other message with a standard ROS header
             elif hasattr(msg, 'header') and hasattr(msg.header, 'stamp') and msg.header.stamp.secs != 0:
                 new_t = msg.header.stamp
             
-            # 对于其他所有消息，new_t 将保持为原始的包时间 t
-
+            # Write message with the new (or original) timestamp
             outbag.write(topic, msg, new_t)
             msg_count += 1
             if msg_count % 1000 == 0:
-                print(f"  已处理 {msg_count} 条消息...")
+                print(f"  Processed {msg_count} messages...")
 
-    print(f"[DONE] 处理完成！总共写入 {msg_count} 条消息到: {output_bag_path}")
+    print(f"[DONE] Processing complete! ✅ Wrote {msg_count} messages to: {output_bag_path}")
 
 if __name__ == '__main__':
     main()

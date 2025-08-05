@@ -96,7 +96,7 @@ protected:
 class GnssCommParser : public GnssParser {
 public:
     std::optional<GnssMeasurement> parse(const gnss_comm::GnssPVTSolnMsg::ConstPtr& msg) {
-        if (!msg || !msg->valid_fix || msg->fix_type < 2) return std::nullopt;
+        if (!msg) return std::nullopt;
 
         GnssMeasurement meas;
         meas.timestamp = gpsToUnixTime(msg->time.week, msg->time.tow);

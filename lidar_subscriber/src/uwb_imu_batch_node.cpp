@@ -2401,6 +2401,10 @@ private:
                 pose_stamped.pose.position.x = measurement.position.x();
                 pose_stamped.pose.position.y = measurement.position.y();
                 pose_stamped.pose.position.z = measurement.position.z();
+                pose_stamped.pose.orientation.x = 0.0; // 默认四元数，实际应用中可能需要更改
+                pose_stamped.pose.orientation.y = 0.0;
+                pose_stamped.pose.orientation.z = 0.0;
+                pose_stamped.pose.orientation.w = 1.0;
                 gps_path_msg_.poses.push_back(pose_stamped);
                 gps_path_pub_.publish(gps_path_msg_);
             }
@@ -2431,6 +2435,9 @@ private:
                 if (has_surrounding_imu_data) {
                     ROS_INFO("Creating keyframe from GNSS measurement at timestamp: %.3f", measurement.timestamp);
                     createKeyframeFromGps(measurement);
+                }
+                else{
+                    ROS_WARN("No surrounding IMU data found for GNSS measurement at timestamp: %.3f", measurement.timestamp);
                 }
             }
         } catch (const std::exception& e) {
@@ -2596,10 +2603,13 @@ private:
             } else {
                 // Fallback: use IMU orientation if available, otherwise identity.
                 sensor_msgs::Imu closest_imu = findClosestImuMeasurement(gps.timestamp);
-                if (closest_imu.header.stamp.toSec() > 0 && closest_imu.orientation_covariance[0] != -1) {
-                    current_state_.orientation = Eigen::Quaterniond(
-                        closest_imu.orientation.w, closest_imu.orientation.x, 
-                        closest_imu.orientation.y, closest_imu.orientation.z).normalized();
+                // check if the imu orientation value 
+                Eigen::Quaterniond imu_orientation;
+                imu_orientation = Eigen::Quaterniond(
+                    closest_imu.orientation.w, closest_imu.orientation.x,
+                    closest_imu.orientation.y, closest_imu.orientation.z);
+                if (closest_imu.header.stamp.toSec() > 0 && closest_imu.orientation_covariance[0] != -1 && imu_orientation.coeffs().norm() > 1e-4) {
+                    current_state_.orientation = imu_orientation.normalized();
                     ROS_INFO("Initializer: Orientation set from IMU data as a fallback.");
                 } else {
                     current_state_.orientation = Eigen::Quaterniond::Identity();
