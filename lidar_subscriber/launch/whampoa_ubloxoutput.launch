@@ -42,7 +42,7 @@
     <arg name="enable_marginalization" default="true" doc="是否启用边缘化以保留历史信息" />
     
     <arg name="optimization_window_size" default="10" doc="滑动窗口中的关键帧数量" />
-    <arg name="optimization_frequency" default="10.0" doc="优化器运行频率 (Hz)" />
+    <arg name="optimization_frequency" default="1.0" doc="优化器运行频率 (Hz)" />
     <arg name="max_iterations" default="10" doc="Ceres求解器的最大迭代次数" />
 
 

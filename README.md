@@ -63,3 +63,54 @@
     - UWB/IMU fusion with EKF. The simulated IMU data is not correct, please use the dataset ```2025-02-06-16-30-08.bag```
     - ```rosrun toyslam uwb_imu_EKF_node ```
     - ```rosbag play 2025-02-06-16-30-08.bag ```
+
+## Use toyslam for GNSS/IMU loosly coupled fusion
+
+Follow these steps to run the GNSS/IMU loose-coupled fusion batch node.
+
+### 1) Branch
+
+It is advised to check out the `stf_main_develop` branch.
+
+### 2) Node
+
+Node to be run: `uwb_imu_batch_node.cpp`
+
+### 3) Launch
+
+Launch file:
+
+```
+roslaunch toyslam batch_board.launch
+```
+
+### 4) Important variables to set
+
+Set the following ROS parameters / launch arguments before running the node:
+
+- `gnss_topic_name` : the GNSS topic name
+- `imu_topic_name` : the IMU topic name
+- `opt_freq` : optimization frequency
+- `sliding_window_size` : sliding window size
+- `max_iteration` : max iteration for each optimization
+- `Output log paths` : GNSS frequency
+
+Example launch `arg` entries (as used in the package):
+
+```xml
+<arg name="gps_log_path" default="$(find toyslam)/../data/gps_log.csv" />
+<arg name="gt_log_path" default="$(find toyslam)/../data/gt_log.csv" />
+<arg name="optimized_log_path" default="$(find toyslam)/../data/optimized_log.csv" />
+```
+
+### 5) Default settings
+
+- GNSS frequency: 1Hz
+- IMU frequency: 400Hz
+- Optimization frequency: 1Hz
+- Sliding window size: 10
+- Max iteration: 50
+
+### 6) Batch optimization note
+
+In case you need to run a batch optimization, set the sliding window size to the state number of the dataset, and adjust the optimization frequency to reciprocal of the number of states.

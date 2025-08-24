@@ -1198,25 +1198,6 @@ public:
             // ROS_INFO_STREAM("Jacobian for block " << i << " value:"  << jacobian);
         }
         
-        // // give the values to jacobians
-        // int param_sizes[3] = {7, 3, 6}; // Fixed sizes for our parameter blocks
-        // int col_offset = 0;
-        // for (int p = 0; p < 3; p++){
-        //     if(!jacobians[p]) {continue;}
-        //     memset(jacobians[p], 0, sizeof(double) * num_residuals() * param_sizes[p]);
-        //     // Get the sub-block of the whole Jacobian matrix corresponding to this parameter block
-        //     Eigen::MatrixXd J_block = whole_Jacobian.block(0, col_offset, num_residuals(), param_sizes[p]);
-
-        //     // Copy the values from the Eigen matrix to the Ceres jacobian array
-        //     for (int i = 0; i < num_residuals(); i++) {
-        //         for (int j = 0; j < param_sizes[p]; j++) {
-        //             jacobians[p][i * param_sizes[p] + j] = J_block(i, j);
-        //         }
-        //     }
-        //     col_offset += param_sizes[p];
-
-        // }
-        
         return true;
     }
     
@@ -1821,6 +1802,7 @@ private:
     std::vector<UwbMeasurement> uwb_measurements_;
 
     std::vector<GnssMeasurement> gps_measurements_;
+    int gps_measurement_count_=0;
 
     // Mutex for thread safety
     std::mutex data_mutex_;
@@ -2562,6 +2544,10 @@ private:
         std::optional<GnssMeasurement> meas_opt = gnss_comm_parser_.parse(msg);
         // 如果解析成功，则传递给统一的处理函数
         if (meas_opt) {
+            gps_measurement_count_++;
+            // if (gps_measurement_count_ % 10 != 0) {
+            //     return; // 每10个测量只处理一次
+            // }
             GnssMeasurement meas = *meas_opt;
             processGnssMeasurement(*meas_opt);
             syncEnuReference();
