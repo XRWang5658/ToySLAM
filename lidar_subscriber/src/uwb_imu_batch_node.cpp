@@ -1311,7 +1311,7 @@ public:
         private_nh.param<std::string>("world_frame_id", world_frame_id_, "map");
         private_nh.param<std::string>("body_frame_id", body_frame_id_, "base_link");
 
-        private_nh.param<bool>("enable_consistency_check", enable_consistency_check_, true);
+        private_nh.param<bool>("enable_consistency_check", enable_consistency_check_, false);
         private_nh.param<double>("nis_threshold_position", nis_threshold_position_, 11.345); // 卡方, 3 DoF, 95%
         private_nh.param<double>("nis_threshold_velocity", nis_threshold_velocity_, 11.345); // 卡方, 3 DoF, 95%
         private_nh.param<double>("max_covariance_scale_factor", max_covariance_scale_factor_, 100000.0);
@@ -2409,7 +2409,7 @@ private:
                 double closest_time_diff = std::numeric_limits<double>::max();
                 for (const auto& imu : imu_buffer_) {
                     double time_diff = std::abs(imu.header.stamp.toSec() - measurement.timestamp);
-                    if (time_diff < 0.2) { // 50ms tolerance
+                    if (time_diff < 0.3) { // 50ms tolerance
                         has_surrounding_imu_data = true;
                         break;
                     }
@@ -2545,9 +2545,9 @@ private:
         // 如果解析成功，则传递给统一的处理函数
         if (meas_opt) {
             gps_measurement_count_++;
-            // if (gps_measurement_count_ % 10 != 0) {
-            //     return; // 每10个测量只处理一次
-            // }
+            if (gps_measurement_count_ % 10 != 0) {
+                return; // 每10个测量只处理一次
+            }
             GnssMeasurement meas = *meas_opt;
             processGnssMeasurement(*meas_opt);
             syncEnuReference();

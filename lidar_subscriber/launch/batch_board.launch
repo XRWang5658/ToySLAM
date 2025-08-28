@@ -1,9 +1,10 @@
 <launch>
-    <arg name="rviz" default="false" />
+    <arg name="rviz" default="true" />
     
     <arg name="use_gps" default="true" />
 
-    <arg name="imu_topic" default="/imu_gnss_driver/imu1/data" />
+    <!-- <arg name="imu_topic" default="/imu_gnss_driver/imu1/data" /> -->
+    <arg name="imu_topic" default="/mavros/imu/data_raw" />
     <arg name="gps_topic" default="/ublox_driver/receiver_pvt" />
     <arg name="uwb_topic" default="/sensor_simulator/UWBPoistionPS" />
 
@@ -13,16 +14,16 @@
     <arg name="artificial_pos_noise_std" default="1" doc="人工位置噪声标准差 (m)" />
     <arg name="artificial_vel_noise_std" default="0" doc="人工速度噪声标准差 (m/s)" />
 
-    <arg name="gps_position_noise" default="1" doc="默认GPS位置噪声 (m)" />
-    <arg name="gps_velocity_noise" default="0" doc="默认GPS速度噪声 (m/s)" />
+    <arg name="gps_position_noise" default="0.01" doc="默认GPS位置噪声 (m)" />
+    <arg name="gps_velocity_noise" default="0.001" doc="默认GPS速度噪声 (m/s)" />
     <arg name="uwb_position_noise" default="0.1" doc="UWB位置噪声 (m)" />
 
 
     <arg name="gravity_magnitude" default="9.785" doc="重力加速度大小 (m/s^2)" />
 
-    <arg name="gps_log_path" default="$(find toyslam)/../data/gps_log.csv" />
-    <arg name="gt_log_path" default="$(find toyslam)/../data/gt_log.csv" />
-    <arg name="optimized_log_path" default="$(find toyslam)/../data/optimized_log.csv" />
+    <arg name="gps_log_path" default="/home/xiangru/code/toyslam_ws/src/data/gps_log.csv" />
+    <arg name="gt_log_path" default="/home/xiangru/code/toyslam_ws/src/data/gt_log.csv" />
+    <arg name="optimized_log_path" default="/home/xiangru/code/toyslam_ws/src/data/optimized_log.csv" />
     
     <arg name="gps_message_type" default="gnss_comm" />
 
@@ -34,15 +35,15 @@
     <arg name="enable_bias_estimation" default="true" doc="是否估计IMU偏置" />
     <arg name="enable_marginalization" default="true" doc="是否启用边缘化以保留历史信息" />
     
-    <arg name="optimization_window_size" default="10" doc="滑动窗口中的关键帧数量" />
-    <arg name="optimization_frequency" default="1.0" doc="优化器运行频率 (Hz)" />
+    <arg name="optimization_window_size" default="150" doc="滑动窗口中的关键帧数量" />
+    <arg name="optimization_frequency" default="1" doc="优化器运行频率 (Hz)" />
     <arg name="max_iterations" default="50" doc="Ceres求解器的最大迭代次数" />
 
 
-    <arg name="imu_acc_noise" default="0.01" doc="加速度计白噪声 (m/s^2)" />
+    <arg name="imu_acc_noise" default="0.1" doc="加速度计白噪声 (m/s^2)" />
     <arg name="imu_gyro_noise" default="0.01" doc="陀螺仪白噪声 (rad/s)" />
     
-    <arg name="imu_acc_bias_noise" default="0.0005" doc="加速度计偏置随机游走噪声" />
+    <arg name="imu_acc_bias_noise" default="0.001" doc="加速度计偏置随机游走噪声" />
     <arg name="imu_gyro_bias_noise" default="0.0001" doc="陀螺仪偏置随机游走噪声" />
     
     <arg name="initial_acc_bias_x" default="0.0" />
