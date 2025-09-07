@@ -2409,7 +2409,7 @@ private:
                 double closest_time_diff = std::numeric_limits<double>::max();
                 for (const auto& imu : imu_buffer_) {
                     double time_diff = std::abs(imu.header.stamp.toSec() - measurement.timestamp);
-                    if (time_diff < 0.3) { // 50ms tolerance
+                    if (time_diff < 0.05) { // 50ms tolerance
                         has_surrounding_imu_data = true;
                         break;
                     }
@@ -2544,10 +2544,10 @@ private:
         std::optional<GnssMeasurement> meas_opt = gnss_comm_parser_.parse(msg);
         // 如果解析成功，则传递给统一的处理函数
         if (meas_opt) {
-            gps_measurement_count_++;
-            if (gps_measurement_count_ % 10 != 0) {
-                return; // 每10个测量只处理一次
-            }
+            // gps_measurement_count_++;
+            // if (gps_measurement_count_ % 10 != 0) {
+            //     return; // 每10个测量只处理一次
+            // }
             GnssMeasurement meas = *meas_opt;
             processGnssMeasurement(*meas_opt);
             syncEnuReference();
@@ -3117,7 +3117,7 @@ private:
             Eigen::Vector3d acc(msg->linear_acceleration.x, msg->linear_acceleration.y, msg->linear_acceleration.z);
             Eigen::Vector3d gyro(msg->angular_velocity.x, msg->angular_velocity.y, msg->angular_velocity.z);
             // add the IMU measurement to the preintegration map
-            current_preint_test.push_back(unix_timestamp, acc, gyro);
+            current_preint_test.push_back(unix_timestamp, acc, gyro * 3.1415926 / 180.0); // convert to rad/s
             // ROS_INFO("[IMU] %f, %f, %f, %f, %f, %f", unix_timestamp, acc.x(), acc.y(), acc.z(), gyro.x(), gyro.y(), gyro.z());
             
 
@@ -3448,7 +3448,7 @@ private:
                         // --- A. 为边缘化问题添加GPS位置因子 ---
                         // 检查标志位，并使用之前在 optimizeFactorGraph 中存储的、最终使用的协方差
                         if (oldest_state.has_gps_pos_factor) {
-                            ROS_INFO("Marginalizing GPS position factor with stored covariance.");
+                            // ROS_INFO("Marginalizing GPS position factor with stored covariance.");
                             ceres::CostFunction* gps_factor = GpsPositionFactor::Create(
                                 matching_gps_meas->position,
                                 oldest_state.final_gps_pos_cov // ★ 使用存储的协方差
@@ -3463,7 +3463,7 @@ private:
                         // --- B. 为边缘化问题添加GPS速度因子 ---
                         // 检查标志位，并使用存储的协方差
                         if (use_gps_velocity_ && oldest_state.has_gps_vel_factor) {
-                            ROS_INFO("Marginalizing GPS velocity factor with stored covariance.");
+                            // ROS_INFO("Marginalizing GPS velocity factor with stored covariance.");
                             ceres::CostFunction* gps_vel_factor = GpsVelocityFactor::Create(
                                 matching_gps_meas->velocity,
                                 oldest_state.final_gps_vel_cov // ★ 使用存储的协方差
@@ -4223,7 +4223,7 @@ private:
                         
                         position_noise_cov *= pos_covariance_scale; // 应用缩放因子
 
-                        const double min_pos_variance = 0.4; // 对应标准差为 0.2米 (20cm)
+                        const double min_pos_variance = 0.0004; // 对应标准差为 0.2米 (20cm)
                         if (position_noise_cov.trace() < min_pos_variance * 3) {
                             // 如果协方差矩阵太小，就用设定的下限值来覆盖它
                             position_noise_cov = Eigen::Matrix3d::Identity() * min_pos_variance;
@@ -4235,6 +4235,7 @@ private:
 
                         ceres::CostFunction* gps_pos_factor = GpsPositionFactor::Create(matching_gps_meas->position, position_noise_cov);
                         problem.AddResidualBlock(gps_pos_factor, new ceres::HuberLoss(1.0), variables[i].pose);
+                        ROS_INFO("Added GPS position factor at frame %zu (time %.3f) with covariance %.2f", i, keyframe_time,position_noise_cov.trace());
                     }
 
                     // --- 添加GPS速度因子 ---
@@ -4245,7 +4246,7 @@ private:
                         
                         velocity_noise_cov *= vel_covariance_scale; // 应用缩放因子
 
-                        const double min_vel_variance = 0.1; // 对应标准差为 0.1m/s
+                        const double min_vel_variance = 0.0001; // 对应标准差为 0.1m/s
                         if (velocity_noise_cov.trace() < min_vel_variance * 3) {
                             velocity_noise_cov = Eigen::Matrix3d::Identity() * min_vel_variance;
                             // ROS_WARN("GPS velocity covariance is too optimistic. Using floor value (std=%.2f m/s).", std::sqrt(min_vel_variance));
@@ -4256,6 +4257,7 @@ private:
                         
                         ceres::CostFunction* gps_vel_factor = GpsVelocityFactor::Create(matching_gps_meas->velocity, velocity_noise_cov);
                         problem.AddResidualBlock(gps_vel_factor, new ceres::HuberLoss(1.0), variables[i].velocity);
+                        ROS_INFO("Added GPS velocity factor at frame %zu (time %.3f) with covariance %.2f", i, keyframe_time, velocity_noise_cov.trace());
                     }
                 }
             }else {
@@ -4583,7 +4585,7 @@ private:
                     double gyro_bias_diff = (new_gyro_bias - state_window_[i].gyro_bias).norm();
 
                     // If the difference is too large, repropagate the preintegration
-                    if (acc_bias_diff > 0.0005 || gyro_bias_diff > 0.005) {
+                    if (acc_bias_diff > 0.05 || gyro_bias_diff > 0.005) {
                         // ROS_WARN("Large bias difference detected: acc [%.3f, %.3f, %.3f], gyro [%.3f, %.3f, %.3f]",
                         //     acc_bias_diff, gyro_bias_diff);
 
