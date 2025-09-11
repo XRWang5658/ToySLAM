@@ -1,5 +1,5 @@
 <launch>
-    <arg name="rviz" default="false" />
+    <arg name="rviz" default="true" />
     
     <arg name="use_gps" default="true" />
 
@@ -10,7 +10,7 @@
     <arg name="subscribe_to_ground_truth" default="true" />
     <arg name="ground_truth_topic" default="/novatel_data/inspvax" />
 
-    <arg name="artificial_pos_noise_std" default="1" doc="人工位置噪声标准差 (m)" />
+    <arg name="artificial_pos_noise_std" default="10" doc="人工位置噪声标准差 (m)" />
     <arg name="artificial_vel_noise_std" default="0" doc="人工速度噪声标准差 (m/s)" />
 
     <arg name="gps_position_noise" default="1" doc="默认GPS位置噪声 (m)" />
@@ -23,6 +23,9 @@
     <arg name="gps_log_path" default="$(find toyslam)/../data/gps_log.csv" />
     <arg name="gt_log_path" default="$(find toyslam)/../data/gt_log.csv" />
     <arg name="optimized_log_path" default="$(find toyslam)/../data/optimized_log.csv" />
+
+    <arg name="result_log_path" default="$(find toyslam)/../data/result_log.txt"/>
+    <arg name="metric_log_path" default="$(find toyslam)/../data/metric_log.txt"/>
     
     <arg name="gps_message_type" default="odometry" />
 
